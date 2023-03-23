@@ -35,7 +35,7 @@ void userprog_init(void) {
   bool success;
 
   /* Allocate process control block
-     It is imoprtant that this is a call to calloc and not malloc,
+     It is important that this is a call to calloc and not malloc,
      so that t->pcb->pagedir is guaranteed to be NULL (the kernel's
      page directory) when t->pcb is assigned, because a timer interrupt
      can come at any time and activate our pagedir */
@@ -62,10 +62,17 @@ pid_t process_execute(const char* file_name) {
     return TID_ERROR;
   strlcpy(fn_copy, file_name, PGSIZE);
 
+  /* Create executable name */
+  size_t name_len = strcspn(file_name, " \0") + 1;
+  char *exec_name = malloc(name_len * sizeof (char));
+  strlcpy(exec_name, file_name, name_len);
+  exec_name[name_len - 1] = '\0';
+
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(file_name, PRI_DEFAULT, start_process, fn_copy);
+  tid = thread_create(exec_name, PRI_DEFAULT, start_process, fn_copy);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
+  free(exec_name);
   return tid;
 }
 
@@ -93,14 +100,21 @@ static void start_process(void* file_name_) {
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
   }
 
+  /* Create executable name */
+  size_t name_len = strcspn(file_name, " \0") + 1;
+  char *exec_name = malloc(name_len * sizeof (char));
+  strlcpy(exec_name, file_name, name_len);
+  exec_name[name_len - 1] = '\0';
+
   /* Initialize interrupt frame and load executable. */
   if (success) {
     memset(&if_, 0, sizeof if_);
     if_.gs = if_.fs = if_.es = if_.ds = if_.ss = SEL_UDSEG;
     if_.cs = SEL_UCSEG;
     if_.eflags = FLAG_IF | FLAG_MBS;
-    success = load(file_name, &if_.eip, &if_.esp);
+    success = load(exec_name, &if_.eip, &if_.esp);
   }
+  free(exec_name);
 
   /* Handle failure with succesful PCB malloc. Must free the PCB */
   if (!success && pcb_success) {
@@ -110,6 +124,51 @@ static void start_process(void* file_name_) {
     struct process* pcb_to_free = t->pcb;
     t->pcb = NULL;
     free(pcb_to_free);
+  }
+
+  /* Put the arguments for the initial function on the stack */
+  if (success) {
+    // Parsing filename
+    int argc = 0;
+    char *ag_start = file_name, *ag_end = file_name;
+    while (true) {
+      while (*ag_start == ' ') ag_start++;
+      ag_end = ag_start;
+      if (*ag_start == '\0') break;
+      while (*ag_end != ' ' && *ag_end != '\0') ag_end++;
+
+      char *esp_ch = ((char *)if_.esp) - (ag_end - ag_start + 1);
+      if_.esp = (void *)esp_ch;
+      while (ag_start != ag_end) *esp_ch++ = *ag_start++;
+      *esp_ch = '\0';
+      ++argc;
+    }
+
+    // Stack align
+    ag_start = (char *)if_.esp;
+    if_.esp = (char **)if_.esp - (argc - 1);
+    if_.esp = (void *)((uint32_t)if_.esp & 0xfffffff0);
+    if_.esp = (char **)if_.esp + (argc - 1);
+
+    // Construct *argv[]
+    char **esp_ch = (char **)if_.esp;
+    *--esp_ch = (char *)0x0;
+    for (int i = 0; i < argc; i++) {
+      *--esp_ch = ag_start;
+      while (*ag_start != '\0') ag_start++;
+      ag_start++;
+    }
+    --esp_ch;
+    *esp_ch = (char *)(esp_ch + 1);
+    if_.esp = (void *)esp_ch;
+
+    // Construct argc
+    if_.esp = (void *)((int *)if_.esp - 1);
+    *(int *)if_.esp = argc;
+
+    // Constart return value
+    if_.esp = (void *) ((uint32_t *)if_.esp - 1);
+    *(uint32_t *)if_.esp = 0;
   }
 
   /* Clean up. Exit on failure or jump to userspace */
