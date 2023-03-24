@@ -20,7 +20,8 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary;
+static struct semaphore temporary[10];
+static struct list loadlock_list;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
 static bool load(const char* file_name, void (**eip)(void), void** esp);
@@ -44,9 +45,39 @@ void userprog_init(void) {
 
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
+
+  /* initialization loadlock_list */
+  list_init(&loadlock_list);
 }
 
-/* Starts a new thread running a user program loaded from
+/* Return the loadlock corresponding to the pid. */
+struct loadlock* get_loadlock(pid_t pid) {
+  struct list_elem *e;
+  for (e = list_begin(&loadlock_list); e != list_end(&loadlock_list);
+       e = list_next(e)) {
+    struct loadlock *ll = list_entry(e, struct loadlock, elem);
+    if (ll->pid == pid) return ll;
+  }
+  return NULL;
+}
+
+/* Create and insert a new loadlock. */
+struct loadlock* add_loadlock(pid_t pid) {
+  struct loadlock *ll = (struct loadlock *)malloc(sizeof(struct loadlock));
+  ll->pid = pid; ll->loaded = false;
+  sema_init(&ll->sema, 0);
+  list_push_front(&loadlock_list, &ll->elem);
+  return ll;
+}
+
+/* remove the loadlock corresponding to the pid. */
+void rm_loadlock(pid_t pid) {
+  struct loadlock *ll = get_loadlock(pid);
+  list_remove(&ll->elem);
+  free(ll);
+}
+
+/*  Starts a new thread running a user program loaded from
    FILENAME.  The new thread may be scheduled (and may even exit)
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
@@ -54,7 +85,6 @@ pid_t process_execute(const char* file_name) {
   char* fn_copy;
   tid_t tid;
 
-  sema_init(&temporary, 0);
   /* Make a copy of FILE_NAME.
      Otherwise there's a race between the caller and load(). */
   fn_copy = palloc_get_page(0);
@@ -64,7 +94,7 @@ pid_t process_execute(const char* file_name) {
 
   /* Create executable name */
   size_t name_len = strcspn(file_name, " \0") + 1;
-  char *exec_name = malloc(name_len * sizeof (char));
+  char *exec_name = malloc(name_len * sizeof(char));
   strlcpy(exec_name, file_name, name_len);
   exec_name[name_len - 1] = '\0';
 
@@ -73,7 +103,15 @@ pid_t process_execute(const char* file_name) {
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   free(exec_name);
-  return tid;
+
+  sema_init(&temporary[tid], 0);
+  /* Waiting for the executing process to be loaded. */
+  add_loadlock(tid);
+  sema_down(&get_loadlock(tid)->sema);
+  pid_t ret = (get_loadlock(tid)->loaded ? tid : -1);
+  rm_loadlock(tid);
+
+  return ret;
 }
 
 /* A thread function that loads a user process and starts it
@@ -174,9 +212,14 @@ static void start_process(void* file_name_) {
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
   if (!success) {
-    sema_up(&temporary);
+    sema_up(&temporary[t->tid]);
+    sema_up(&get_loadlock(t->tid)->sema);
     thread_exit();
   }
+
+  /* Loaded successfully */
+  get_loadlock(t->tid)->loaded = true;
+  sema_up(&get_loadlock(t->tid)->sema);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -198,7 +241,7 @@ static void start_process(void* file_name_) {
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
 int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary);
+  sema_down(&temporary[child_pid]);
   return 0;
 }
 
@@ -206,6 +249,7 @@ int process_wait(pid_t child_pid UNUSED) {
 void process_exit(void) {
   struct thread* cur = thread_current();
   uint32_t* pd;
+  pid_t pid = thread_current()->tid;
 
   /* If this thread does not have a PCB, don't worry */
   if (cur->pcb == NULL) {
@@ -237,7 +281,7 @@ void process_exit(void) {
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&temporary);
+  sema_up(&temporary[pid]);
   thread_exit();
 }
 

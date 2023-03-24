@@ -2,6 +2,7 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include <list.h>
 #include <stdint.h>
 
 // At most 8MB can be allocated to the stack
@@ -12,6 +13,17 @@
 /* PIDs and TIDs are the same type. PID should be
    the TID of the main thread of the process */
 typedef tid_t pid_t;
+
+/* Used to determine whether the child process is loaded */
+struct loadlock {
+   pid_t pid;
+   bool loaded;             /* Whether the process was successfully loaded */
+   struct semaphore sema;  /* The semaphore used to block the creator thread */
+   struct list_elem elem;
+};
+struct loadlock* get_loadlock(pid_t pid);
+struct loadlock* add_loadlock(pid_t pid);
+void rm_loadlock(pid_t pid);
 
 /* Thread functions (Project 2: Multithreading) */
 typedef void (*pthread_fun)(void*);
