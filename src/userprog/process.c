@@ -20,7 +20,6 @@
 #include "threads/thread.h"
 #include "threads/vaddr.h"
 
-static struct semaphore temporary[10];
 static struct list loadlock_list;
 static thread_func start_process NO_RETURN;
 static thread_func start_pthread NO_RETURN;
@@ -46,11 +45,15 @@ void userprog_init(void) {
   /* Kill the kernel if we did not succeed */
   ASSERT(success);
 
+  /* initialization PCB */
+  list_init(&t->pcb->childlist);
+
   /* initialization loadlock_list */
   list_init(&loadlock_list);
 }
 
-/* Return the loadlock corresponding to the pid. */
+/* Return the loadlock corresponding to the pid.
+   Returns NULL if not present in the list. */
 struct loadlock* get_loadlock(pid_t pid) {
   struct list_elem *e;
   for (e = list_begin(&loadlock_list); e != list_end(&loadlock_list);
@@ -64,17 +67,60 @@ struct loadlock* get_loadlock(pid_t pid) {
 /* Create and insert a new loadlock. */
 struct loadlock* add_loadlock(pid_t pid) {
   struct loadlock *ll = (struct loadlock *)malloc(sizeof(struct loadlock));
-  ll->pid = pid; ll->loaded = false;
+  ll->pid = pid; ll->loaded = false; ll->pcb = NULL;
   sema_init(&ll->sema, 0);
+  sema_init(&ll->sema_done, 0);
   list_push_front(&loadlock_list, &ll->elem);
   return ll;
 }
 
-/* remove the loadlock corresponding to the pid. */
+/* Remove the loadlock corresponding to the pid. */
 void rm_loadlock(pid_t pid) {
   struct loadlock *ll = get_loadlock(pid);
-  list_remove(&ll->elem);
-  free(ll);
+  if (ll != NULL) {
+    list_remove(&ll->elem);
+    free(ll);
+  }
+}
+
+/* Return the childprocess corresponding to the pid.
+   Returns NULL if not present in the list. */
+struct childprocess* get_childprocess(struct list* childlist, pid_t pid) {
+  struct list_elem *e;
+  for (e = list_begin(childlist); e != list_end(childlist);
+       e = list_next(e)) {
+    struct childprocess *cp = list_entry(e, struct childprocess, elem);
+    if (cp->pid == pid) return cp;
+  }
+  return NULL;
+}
+
+/* Create and insert a new childprocess. */
+struct childprocess* add_childprocess(struct list* childlist, pid_t pid) {
+  struct childprocess *cp = (struct childprocess *)malloc(sizeof(struct childprocess));
+  cp->pid = pid; cp->exitstatus = 0;
+  sema_init(&cp->sema, 0);
+  list_push_front(childlist, &cp->elem);
+  return cp;
+}
+
+/* Remove the loadlock corresponding to the pid. */
+void rm_childprocess(struct list* childlist, pid_t pid) {
+  struct childprocess *cp= get_childprocess(childlist, pid);
+  if (cp != NULL) {
+    list_remove(&cp->elem);
+    free(cp);
+  }
+}
+
+/* Remove entire list. */
+void rm_childlist(struct list* childlist) {
+  while (!list_empty(childlist)) {
+    struct childprocess *cp = list_entry(
+      list_begin(childlist), struct childprocess, elem);
+    list_pop_front(childlist);
+    free(cp);
+  }
 }
 
 /*  Starts a new thread running a user program loaded from
@@ -104,12 +150,25 @@ pid_t process_execute(const char* file_name) {
     palloc_free_page(fn_copy);
   free(exec_name);
 
-  sema_init(&temporary[tid], 0);
   /* Waiting for the executing process to be loaded. */
   add_loadlock(tid);
-  sema_down(&get_loadlock(tid)->sema);
-  pid_t ret = (get_loadlock(tid)->loaded ? tid : -1);
-  rm_loadlock(tid);
+  struct loadlock *ll = get_loadlock(tid);
+  sema_down(&ll->sema);
+  pid_t ret = (ll->loaded ? tid : -1);
+
+  /* Set the parent process pcb pointer of the child process
+     and set childlist. */
+  struct thread* t = thread_current();
+  add_childprocess(&t->pcb->childlist, tid);
+  if (ret != -1) {
+    ll->pcb->parent_pcb = t->pcb;
+    sema_up(&ll->sema_done);
+  } else {
+    struct childprocess *cp = get_childprocess(&t->pcb->childlist, tid);
+    cp->exitstatus = -1;
+    sema_up(&cp->sema);
+    rm_loadlock(tid);
+  }
 
   return ret;
 }
@@ -136,6 +195,7 @@ static void start_process(void* file_name_) {
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
+    list_init(&t->pcb->childlist);
   }
 
   /* Create executable name */
@@ -212,14 +272,17 @@ static void start_process(void* file_name_) {
   /* Clean up. Exit on failure or jump to userspace */
   palloc_free_page(file_name);
   if (!success) {
-    sema_up(&temporary[t->tid]);
     sema_up(&get_loadlock(t->tid)->sema);
     thread_exit();
   }
 
   /* Loaded successfully */
-  get_loadlock(t->tid)->loaded = true;
-  sema_up(&get_loadlock(t->tid)->sema);
+  struct loadlock *ll = get_loadlock(t->tid);
+  ll->loaded = true;
+  ll->pcb = t->pcb;
+  sema_up(&ll->sema);
+  sema_down(&ll->sema_done);
+  rm_loadlock(t->tid);
 
   /* Start the user process by simulating a return from an
      interrupt, implemented by intr_exit (in
@@ -240,9 +303,15 @@ static void start_process(void* file_name_) {
 
    This function will be implemented in problem 2-2.  For now, it
    does nothing. */
-int process_wait(pid_t child_pid UNUSED) {
-  sema_down(&temporary[child_pid]);
-  return 0;
+int process_wait(pid_t child_pid) {
+  struct list *childlist = &thread_current()->pcb->childlist;
+  struct childprocess *cp = get_childprocess(childlist, child_pid);
+  if (cp == NULL) return -1;
+
+  sema_down(&cp->sema);
+  int ret = cp->exitstatus;
+  rm_childprocess(childlist, child_pid);
+  return ret;
 }
 
 /* Free the current process's resources. */
@@ -256,6 +325,11 @@ void process_exit(void) {
     thread_exit();
     NOT_REACHED();
   }
+
+  /* Set child process status in parent pcb */
+  struct childprocess* cp = get_childprocess(
+    &cur->pcb->parent_pcb->childlist, pid);
+  sema_up(&cp->sema);
 
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
@@ -278,10 +352,10 @@ void process_exit(void) {
      If this happens, then an unfortuantely timed timer interrupt
      can try to activate the pagedir, but it is now freed memory */
   struct process* pcb_to_free = cur->pcb;
+  rm_childlist(&pcb_to_free->childlist);
   cur->pcb = NULL;
   free(pcb_to_free);
 
-  sema_up(&temporary[pid]);
   thread_exit();
 }
 

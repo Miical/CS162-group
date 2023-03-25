@@ -1,6 +1,7 @@
 #include "userprog/exception.h"
 #include <inttypes.h>
 #include <stdio.h>
+#include "process.h"
 #include "userprog/gdt.h"
 #include "userprog/process.h"
 #include "threads/interrupt.h"
@@ -78,7 +79,9 @@ static void kill(struct intr_frame* f) {
       printf("%s: dying due to interrupt %#04x (%s).\n", thread_name(), f->vec_no,
              intr_name(f->vec_no));
       intr_dump_frame(f);
-      printf("%s: exit(-1)\n", thread_current()->pcb->process_name);
+      struct thread* t = thread_current();
+      get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = -1;
+      printf("%s: exit(-1)\n", t->pcb->process_name);
       process_exit();
       NOT_REACHED();
 

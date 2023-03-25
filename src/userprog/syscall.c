@@ -38,6 +38,14 @@ static bool valid_string(char *file_name) {
   }
 }
 
+static void exit_process_with_status(int status) {
+  struct thread* t = thread_current();
+  if (t->pcb->parent_pcb != NULL)
+    get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = status;
+  printf("%s: exit(%d)\n", t->pcb->process_name, status);
+  process_exit();
+}
+
 static void syscall_handler(struct intr_frame* f UNUSED) {
   uint32_t* args = ((uint32_t*)f->esp);
 
@@ -48,13 +56,10 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    * include it in your final submission.
    */
 
-/*
   if (!valid_address_i((void *)args)) {
     f->eax = -1;
-    printf("%s: exit(-1)\n", thread_current()->pcb->process_name);
-    process_exit();
+    exit_process_with_status(-1);
   }
-*/
 
   if (args[0] == SYS_PRACTICE) {
     f->eax = args[1] + 1;
@@ -64,16 +69,14 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
   }
   else if (args[0] == SYS_EXIT) {
     f->eax = args[1];
-    printf("%s: exit(%d)\n", thread_current()->pcb->process_name, args[1]);
-    process_exit();
+    exit_process_with_status(args[1]);
   }
   else if (args[0] == SYS_EXEC) {
     if (valid_address_i((void *)(args + 1)) && valid_string((char *)args[1])) {
       f->eax = process_execute((char *) args[1]);
     } else {
       f->eax = -1;
-      printf("%s: exit(-1)\n", thread_current()->pcb->process_name);
-      process_exit();
+      exit_process_with_status(-1);
     }
   }
   else if (args[0] == SYS_WAIT) {

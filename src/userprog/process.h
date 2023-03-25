@@ -17,13 +17,27 @@ typedef tid_t pid_t;
 /* Used to determine whether the child process is loaded */
 struct loadlock {
    pid_t pid;
-   bool loaded;             /* Whether the process was successfully loaded */
-   struct semaphore sema;  /* The semaphore used to block the creator thread */
+   bool loaded;                /* Whether the process was successfully loaded */
+   struct process* pcb;        /* Process control block if loaded */
+   struct semaphore sema;      /* The semaphore used to block the creator thread */
+   struct semaphore sema_done; /* The semaphore used to block the child process */
    struct list_elem elem;
 };
 struct loadlock* get_loadlock(pid_t pid);
 struct loadlock* add_loadlock(pid_t pid);
 void rm_loadlock(pid_t pid);
+
+/* Used to manage child processes */
+struct childprocess {
+   pid_t pid;
+   int exitstatus;        /* Exit status */
+   struct semaphore sema; /* Used to wait for child processes */
+   struct list_elem elem;
+};
+struct childprocess* get_childprocess(struct list* childlist, pid_t pid);
+struct childprocess* add_childprocess(struct list* childlist, pid_t pid);
+void rm_childprocess(struct list* childlist, pid_t pid);
+void rm_childlist(struct list* childlist);
 
 /* Thread functions (Project 2: Multithreading) */
 typedef void (*pthread_fun)(void*);
@@ -39,6 +53,8 @@ struct process {
   uint32_t* pagedir;          /* Page directory. */
   char process_name[16];      /* Name of the main thread */
   struct thread* main_thread; /* Pointer to main thread */
+  struct process* parent_pcb; /* Pointer to parent process pcb */
+  struct list childlist;      /* Child process list */
 };
 
 void userprog_init(void);
