@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "syscall.h"
 #include "userprog/gdt.h"
 #include "userprog/pagedir.h"
 #include "userprog/tss.h"
@@ -347,6 +348,13 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
+  /* Close all its open file descriptors */
+  close_all_fd_of_process(cur->tid);
+
+  /* Close executable file */
+  file_allow_write(cur->pcb->executable_file);
+  file_close(cur->pcb->executable_file);
+
   /* Free the PCB of this process and kill this thread
      Avoid race where PCB is freed before t->pcb is set to NULL
      If this happens, then an unfortuantely timed timer interrupt
@@ -446,6 +454,7 @@ static bool load_segment(struct file* file, off_t ofs, uint8_t* upage, uint32_t 
    and its initial stack pointer into *ESP.
    Returns true if successful, false otherwise. */
 bool load(const char* file_name, void (**eip)(void), void** esp) {
+  lock_acquire(&templock);
   struct thread* t = thread_current();
   struct Elf32_Ehdr ehdr;
   struct file* file = NULL;
@@ -465,6 +474,10 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
     printf("load: %s: open failed\n", file_name);
     goto done;
   }
+
+  /* Protect executable file. */
+  file_deny_write(file);
+  t->pcb->executable_file = file;
 
   /* Read and verify executable header. */
   if (file_read(file, &ehdr, sizeof ehdr) != sizeof ehdr ||
@@ -534,8 +547,9 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   success = true;
 
 done:
+  lock_release(&templock);
+
   /* We arrive here whether the load is successful or not. */
-  file_close(file);
   return success;
 }
 
