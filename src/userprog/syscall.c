@@ -14,6 +14,7 @@
 #include "filesys/file.h"
 #include "devices/input.h"
 #include "devices/shutdown.h"
+#include "lib/float.h"
 
 struct lock templock;
 
@@ -277,5 +278,8 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
       f->eax = -1;
     }
     lock_release(&templock);
+  } else if (args[0] == SYS_COMPUTE_E) {
+    verify_address_i(args + 1);
+    f->eax = sys_sum_to_e(args[1]);
   }
 }
