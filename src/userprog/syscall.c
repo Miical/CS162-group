@@ -127,6 +127,7 @@ void close_all_fd_of_process(pid_t pid) {
       e = list_next(e);
       file_close(of->f);
       list_remove(elem_to_rm);
+      free(of);
     } else {
       e = list_next(e);
     }
@@ -273,7 +274,7 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     struct openedfile *of = get_openedfile(args[1]);
     if (of != NULL && of->pid == thread_current()->tid) {
       file_close(of->f);
-      ASSERT(rm_openedfile(args[1]));
+      rm_openedfile(args[1]);
     } else {
       f->eax = -1;
     }
