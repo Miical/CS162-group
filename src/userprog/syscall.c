@@ -1,8 +1,11 @@
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 #include <syscall-nr.h>
 #include "process.h"
 #include "pagedir.h"
+#include "syscall.h"
 #include "threads/vaddr.h"
 #include "threads/malloc.h"
 #include "threads/interrupt.h"
@@ -18,42 +21,52 @@
 
 struct lock templock;
 
-static void exit_process_with_status(int status) {
-  struct thread* t = thread_current();
-  if (t->pcb->parent_pcb != NULL)
-    get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = status;
-  printf("%s: exit(%d)\n", t->pcb->process_name, status);
-  process_exit();
-}
+static void syscall_exit(int status);
+static uint32_t syscall_practice(uint32_t num);
+static void syscall_halt(void);
+static int syscall_exec(const char *filename);
+static int syscall_wait(pid_t pid);
+static int syscall_create(const char* name, off_t initial_size);
+static int syscall_remove(const char* name);
+static int syscall_open(const char* name);
+static int syscall_filesize(int fd);
+static int syscall_read(int fd, void *buffer, size_t length);
+static int syscall_write(int fd, void *buffer, size_t length);
+static void syscall_seek(int fd, off_t pos);
+static int syscall_tell(int fd);
+static int syscall_close(int fd);
+static int syscall_compute_e(int n);
 
-static void verify_address_b(void* addr) {
-  if (addr == NULL || !is_user_vaddr(addr)
-    || pagedir_get_page(thread_current()->pcb->pagedir, addr) == NULL) {
-      exit_process_with_status(-1);
+/* Address verification */
+
+static void syscall_exit(int status);
+
+static void validate_byte(const char* buffer) {
+  if (buffer == NULL || !is_user_vaddr(buffer)
+    || pagedir_get_page(thread_current()->pcb->pagedir, buffer) == NULL) {
+      syscall_exit(-1);
     }
 }
 
-static void verify_address_i(void* addr) {
-  char *addr_b = (char *) addr;
-  verify_address_b(addr_b);
-  verify_address_b(addr_b + 1);
-  verify_address_b(addr_b + 2);
-  verify_address_b(addr_b + 3);
-}
-
-static void verify_string(char *file_name) {
+static void validate_string(const char* string) {
   while (true) {
-    verify_address_b(file_name);
-    if (*file_name == '\0') return;
-    else file_name++;
+    validate_byte(string);
+    if (*string == '\0') return;
+    else string++;
   }
 }
 
-static void verify_buffer(void *buffer, unsigned size) {
+static void validate_buffer(const void* buffer, size_t length) {
   char *addr_b = (char *)buffer;
-  while (size--)
-    verify_address_b(addr_b++);
+  while (length--)
+    validate_byte(addr_b++);
 }
+
+static void validate_argv(const uint32_t* argv, int count) {
+  validate_buffer(argv, count * sizeof(uint32_t));
+}
+
+/* File open */
 
 struct list openedfiles;
 
@@ -135,12 +148,155 @@ void close_all_fd_of_process(pid_t pid) {
   lock_release(&templock);
 }
 
+/* System call */
+
 static void syscall_handler(struct intr_frame*);
 
 void syscall_init(void) {
   intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
   list_init(&openedfiles);
   lock_init(&templock);
+}
+
+static void syscall_exit(int status) {
+  struct thread* t = thread_current();
+  if (t->pcb->parent_pcb != NULL)
+    get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = status;
+  printf("%s: exit(%d)\n", t->pcb->process_name, status);
+  process_exit();
+}
+
+static uint32_t syscall_practice(uint32_t num) {
+  return num + 1;
+}
+
+static void syscall_halt() {
+  shutdown_power_off();
+}
+
+static int syscall_exec(const char *filename) {
+  return process_execute(filename);
+}
+
+static int syscall_wait(pid_t pid) {
+  return process_wait(pid);
+}
+
+static int syscall_create(const char* name, off_t initial_size) {
+  lock_acquire(&templock);
+  int st = filesys_create(name, initial_size);
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_remove(const char* name) {
+  lock_acquire(&templock);
+  int st = filesys_remove(name);
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_open(const char* name) {
+  lock_acquire(&templock);
+  int st;
+  struct file* fp = filesys_open(name);
+  if (fp != NULL) {
+    st = add_openedfile(fp);
+  } else {
+    st = -1;
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_filesize(int fd) {
+  int st;
+  lock_acquire(&templock);
+  struct file* fp = get_file(fd);
+  if (fp != NULL) {
+    st = inode_length(file_get_inode(fp));
+  } else {
+    st = -1;
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_read(int fd, void *buffer, size_t length) {
+  int st;
+  lock_acquire(&templock);
+  if (fd == STDIN_FILENO) {
+    int8_t *p = (int8_t *)buffer;
+    while (length--)
+      *p++ = input_getc();
+    st = length;
+  } else {
+    struct file* fp = get_file(fd);
+    if (fp != NULL) {
+      st = file_read(fp, buffer, length);
+    } else {
+      st = -1;
+    }
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_write(int fd, void *buffer, size_t length) {
+  int st;
+  lock_acquire(&templock);
+  if (fd == STDOUT_FILENO) {
+    putbuf((char*)buffer, length);
+    st = length;
+  } else {
+    struct file* fp = get_file(fd);
+    if (fp != NULL) {
+      st = file_write(fp, buffer, length);
+    } else {
+      st = -1;
+    }
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static void syscall_seek(int fd, off_t pos) {
+  lock_acquire(&templock);
+  struct file* fp = get_file(fd);
+  if (fp != NULL) file_seek(fp, pos);
+  lock_release(&templock);
+}
+
+static int syscall_tell(int fd) {
+  int st;
+  lock_acquire(&templock);
+  struct file* fp = get_file(fd);
+  if (fp != NULL) {
+    st = file_tell(fp);
+  } else {
+    st = -1;
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_close(int fd) {
+  int st;
+  lock_acquire(&templock);
+  struct openedfile *of = get_openedfile(fd);
+  if (of != NULL && of->pid == thread_current()->tid) {
+    file_close(of->f);
+    rm_openedfile(fd);
+    st = 1;
+  } else {
+    st = -1;
+  }
+  lock_release(&templock);
+  return st;
+}
+
+static int syscall_compute_e(int n) {
+  return sys_sum_to_e(n);
 }
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
@@ -153,134 +309,91 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
    * include it in your final submission.
    */
 
-  verify_address_i(args);
+  validate_argv(args, 1);
 
-  if (args[0] == SYS_PRACTICE) {
-    f->eax = args[1] + 1;
-  }
-  else if (args[0] == SYS_HALT) {
-    shutdown_power_off();
-  }
-  else if (args[0] == SYS_EXIT) {
-    verify_address_i(args + 1);
-    f->eax = args[1];
-    exit_process_with_status(args[1]);
-  }
-  else if (args[0] == SYS_EXEC) {
-    verify_address_i(args + 1);
-    verify_string((char *)args[1]);
-    f->eax = process_execute((char *) args[1]);
-  }
-  else if (args[0] == SYS_WAIT) {
-    f->eax = process_wait(args[1]);
-  }
-  else if (args[0] == SYS_CREATE) {
-    verify_address_i(args + 1);
-    verify_address_i(args + 2);
-    verify_string((char *)args[1]);
-    lock_acquire(&templock);
-    f->eax = filesys_create((char *)args[1], args[2]);
-    lock_release(&templock);
-  }
-  else if (args[0] == SYS_REMOVE) {
-    verify_address_i(args + 1);
-    verify_string((char *)args[1]);
-    lock_acquire(&templock);
-    f->eax = filesys_remove((char *) args[1]);
-    lock_release(&templock);
-  }
-  else if (args[0] == SYS_OPEN) {
-    verify_address_i(args + 1);
-    verify_string((char *)args[1]);
-    lock_acquire(&templock);
-    struct file* fp = filesys_open((char *)args[1]);
-    if (fp != NULL) {
-      f->eax = add_openedfile(fp);
-    } else {
-      f->eax = -1;
-    }
-    lock_release(&templock);
-  }
-  else if (args[0] == SYS_FILESIZE) {
-    verify_address_i(args + 1);
-    lock_acquire(&templock);
-    struct file* fp = get_file(args[1]);
-    if (fp != NULL) {
-      f->eax = inode_length(file_get_inode(fp));
-    } else {
-      f->eax = -1;
-    }
-    lock_release(&templock);
-  }
-  else if (args[0] == SYS_READ) {
-    verify_address_i(args + 1);
-    verify_address_i(args + 2);
-    verify_address_i(args + 3);
-    verify_buffer((void *)args[2], args[3]);
-    lock_acquire(&templock);
-    if (args[1] == STDIN_FILENO) {
-      int8_t *p = (int8_t *)args[2];
-      unsigned size = args[3];
-      while (size--)
-        *p++ = input_getc();
-    } else {
-      struct file* fp = get_file(args[1]);
-      if (fp != NULL) {
-        f->eax = file_read(fp, (void *)args[2], args[3]);
-      } else {
-        f->eax = -1;
-      }
-    }
-    lock_release(&templock);
-  }
-  else if (args[0] == SYS_WRITE) {
-    verify_address_i(args + 1);
-    verify_address_i(args + 2);
-    verify_address_i(args + 3);
-    verify_buffer((void *)args[2], args[3]);
-    lock_acquire(&templock);
-    if (args[1] == STDOUT_FILENO) {
-      putbuf((char*)args[2], (size_t)args[3]);
-      f->eax = args[3];
-    } else {
-      struct file* fp = get_file(args[1]);
-      if (fp != NULL) {
-        f->eax = file_write(fp, (void *)args[2], args[3]);
-      } else {
-        f->eax = -1;
-      }
-    }
-    lock_release(&templock);
-  } else if (args[0] == SYS_SEEK) {
-    verify_address_i(args + 1);
-    verify_address_i(args + 2);
-    lock_acquire(&templock);
-    struct file* fp = get_file(args[1]);
-    if (fp != NULL) file_seek(fp, args[2]);
-    lock_release(&templock);
-  } else if (args[0] == SYS_TELL) {
-    verify_address_i(args + 1);
-    lock_acquire(&templock);
-    struct file* fp = get_file(args[1]);
-    if (fp != NULL) {
-      f->eax = file_tell(fp);
-    } else {
-      f->eax = -1;
-    }
-    lock_release(&templock);
-  } else if (args[0] == SYS_CLOSE) {
-    verify_address_i(args + 1);
-    lock_acquire(&templock);
-    struct openedfile *of = get_openedfile(args[1]);
-    if (of != NULL && of->pid == thread_current()->tid) {
-      file_close(of->f);
-      rm_openedfile(args[1]);
-    } else {
-      f->eax = -1;
-    }
-    lock_release(&templock);
-  } else if (args[0] == SYS_COMPUTE_E) {
-    verify_address_i(args + 1);
-    f->eax = sys_sum_to_e(args[1]);
+  switch(args[0]) {
+    case SYS_PRACTICE:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_practice(args[1]);
+      break;
+
+    case SYS_HALT:
+      syscall_halt();
+      break;
+
+    case SYS_EXIT:
+      validate_argv(args + 1, 1);
+      syscall_exit(args[1]);
+      break;
+
+    case SYS_EXEC:
+      validate_argv(args + 1, 1);
+      validate_string((char *)args[1]);
+      f->eax = syscall_exec((char *)args[1]);
+      break;
+
+    case SYS_WAIT:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_wait(args[1]);
+      break;
+
+    case SYS_CREATE:
+      validate_argv(args + 1, 2);
+      validate_string((char *)args[1]);
+      f->eax = syscall_create((char *)args[1], args[2]);
+      break;
+
+    case SYS_REMOVE:
+      validate_argv(args + 1, 1);
+      validate_string((char *)args[1]);
+      f->eax = syscall_remove((char *)args[1]);
+      break;
+
+    case SYS_OPEN:
+      validate_argv(args + 1, 1);
+      validate_string((char *)args[1]);
+      f->eax = syscall_open((char *)args[1]);
+      break;
+
+    case SYS_FILESIZE:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_filesize(args[1]);
+      break;
+
+    case SYS_READ:
+      validate_argv(args + 1, 3);
+      validate_buffer((void *)args[2], args[3]);
+      f->eax = syscall_read(args[1], (void *)args[2], (size_t)args[3]);
+      break;
+
+    case SYS_WRITE:
+      validate_argv(args + 1, 3);
+      validate_buffer((void *)args[2], args[3]);
+      f->eax = syscall_write(args[1], (void *)args[2], (size_t)args[3]);
+      break;
+
+    case SYS_SEEK:
+      validate_argv(args + 1, 2);
+      syscall_seek(args[1], args[2]);
+      break;
+
+    case SYS_TELL:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_tell(args[1]);
+      break;
+
+    case SYS_CLOSE:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_close(args[1]);
+      break;
+
+    case SYS_COMPUTE_E:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_compute_e(args[1]);
+      break;
+
+    default:
+      printf("Unimplemented system call: %d\n", (int)args[0]);
+      break;
   }
 }
