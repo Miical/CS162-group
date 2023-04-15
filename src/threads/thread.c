@@ -4,6 +4,7 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
+#include "thread.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -23,6 +24,7 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list fifo_ready_list;
+static struct list prio_ready_list;
 
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
@@ -108,6 +110,7 @@ void thread_init(void) {
 
   lock_init(&tid_lock);
   list_init(&fifo_ready_list);
+  list_init(&prio_ready_list);
   list_init(&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -228,7 +231,7 @@ void thread_block(void) {
 
 /* Places a thread on the ready structure appropriate for the
    current active scheduling policy.
-   
+
    This function must be called with interrupts turned off. */
 static void thread_enqueue(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
@@ -236,6 +239,8 @@ static void thread_enqueue(struct thread* t) {
 
   if (active_sched_policy == SCHED_FIFO)
     list_push_back(&fifo_ready_list, &t->elem);
+  else if (active_sched_policy == SCHED_PRIO)
+    prio_insert(t, &prio_ready_list);
   else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
 }
@@ -328,7 +333,12 @@ void thread_foreach(thread_action_func* func, void* aux) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
-void thread_set_priority(int new_priority) { thread_current()->priority = new_priority; }
+void thread_set_priority(int new_priority) {
+  struct thread* t = thread_current();
+  t->priority = new_priority;
+  if (!have_highest_prio(&prio_ready_list, t))
+    thread_yield();
+}
 
 /* Returns the current thread's priority. */
 int thread_get_priority(void) { return thread_current()->priority; }
@@ -457,7 +467,10 @@ static struct thread* thread_schedule_fifo(void) {
 
 /* Strict priority scheduler */
 static struct thread* thread_schedule_prio(void) {
-  PANIC("Unimplemented scheduler policy: \"-sched=prio\"");
+  if (!list_empty(&prio_ready_list))
+    return list_entry(list_pop_back(&prio_ready_list), struct thread, elem);
+  else
+    return idle_thread;
 }
 
 /* Fair priority scheduler */
@@ -564,3 +577,23 @@ static tid_t allocate_tid(void) {
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(struct thread, stack);
+
+void prio_insert(struct thread* thread_to_insert, struct list* prio_list) {
+  struct list_elem *e;
+  for (e = list_begin(prio_list); e != list_end(prio_list);
+       e = list_next(e)) {
+    struct thread *t = list_entry(e, struct thread, elem);
+    if (t->priority >= thread_to_insert->priority) {
+      list_insert(&t->elem, &thread_to_insert->elem);
+      return;
+    }
+  }
+  list_push_back(prio_list, &thread_to_insert->elem);
+}
+
+bool have_highest_prio(struct list* prio_list, struct thread* t) {
+  if (list_empty(prio_list))
+    return true;
+  struct thread* h = list_entry(list_back(prio_list), struct thread, elem);
+  return h->priority < t->priority;
+}

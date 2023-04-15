@@ -153,4 +153,8 @@ void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
 
+/* Priority functions. */
+void prio_insert(struct thread* thread_to_insert, struct list* prio_list);
+bool have_highest_prio(struct list* prio_list, struct thread* t);
+
 #endif /* threads/thread.h */
