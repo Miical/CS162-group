@@ -382,7 +382,7 @@ void cancel_donation(struct thread* t) {
   int p = get_max_prioriy(t), old_prio = get_max_prioriy(to);
   remove_prio_elem(to, p);
 
-  if (to->prio_set_during_donating != -1) {
+  if (to->donator_number == 0 && to->prio_set_during_donating != -1) {
     to->priority = to->prio_set_during_donating;
     to->prio_set_during_donating = -1;
   }

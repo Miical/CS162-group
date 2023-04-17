@@ -189,10 +189,8 @@ void lock_acquire(struct lock* lock) {
   if (!lock_try_acquire(lock)) {
     if (lock->holder->priority < thread_get_priority()) {
       donate_priority(lock->holder);
-      sema_down(&lock->semaphore);
-    } else {
-      sema_down(&lock->semaphore);
     }
+    sema_down(&lock->semaphore);
     lock->holder = thread_current();
   }
 }
