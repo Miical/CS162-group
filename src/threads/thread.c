@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "thread.h"
+#include "threads/malloc.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -212,6 +213,9 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   /* Add to run queue. */
   thread_unblock(t);
 
+  if (!have_highest_prio())
+    thread_yield();
+
   return tid;
 }
 
@@ -334,14 +338,56 @@ void thread_foreach(thread_action_func* func, void* aux) {
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
 void thread_set_priority(int new_priority) {
-  struct thread* t = thread_current();
+  struct thread *t = thread_current();
+  if (t->donator_number != 0) {
+    t->prio_set_during_donating = new_priority;
+    return;
+  }
+
   t->priority = new_priority;
-  if (!have_highest_prio(&prio_ready_list, t))
+  if (!have_highest_prio())
     thread_yield();
 }
 
+static void insert_prio_elem(struct thread* t, int priority);
+static void remove_prio_elem(struct thread* t, int priority);
+
+static void update_donation(struct thread* t, int old_prio) {
+  int new_prio;
+  while (t->donated_thread != NULL && (new_prio = get_max_prioriy(t)) != old_prio) {
+    int next_old_prio = get_max_prioriy(t->donated_thread);
+    remove_prio_elem(t->donated_thread, old_prio);
+    insert_prio_elem(t->donated_thread, new_prio);
+    t = t->donated_thread; old_prio = next_old_prio;
+  }
+  if (t->status == THREAD_READY)
+    prio_update(t, &prio_ready_list);
+}
+
 /* Returns the current thread's priority. */
-int thread_get_priority(void) { return thread_current()->priority; }
+int thread_get_priority(void) {
+  return get_max_prioriy(thread_current());
+}
+
+void donate_priority(struct thread* to) {
+  thread_current()->donated_thread = to;
+  int p = thread_get_priority(), old_prio = get_max_prioriy(to);
+  insert_prio_elem(to, p);
+  update_donation(to, old_prio);
+}
+
+void cancel_donation(struct thread* t) {
+  struct thread* to = t->donated_thread;
+  t->donated_thread = NULL;
+  int p = get_max_prioriy(t), old_prio = get_max_prioriy(to);
+  remove_prio_elem(to, p);
+
+  if (to->prio_set_during_donating != -1) {
+    to->priority = to->prio_set_during_donating;
+    to->prio_set_during_donating = -1;
+  }
+  update_donation(to, old_prio);
+}
 
 /* Sets the current thread's nice value to NICE. */
 void thread_set_nice(int nice UNUSED) { /* Not yet implemented. */
@@ -440,6 +486,11 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->priority = priority;
   t->pcb = NULL;
   t->magic = THREAD_MAGIC;
+
+  memset(t->donated_priority, 0, sizeof(t->donated_priority));
+  t->donator_number = 0;
+  t->prio_set_during_donating = -1;
+  t->donated_thread = NULL;
 
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
@@ -583,7 +634,7 @@ void prio_insert(struct thread* thread_to_insert, struct list* prio_list) {
   for (e = list_begin(prio_list); e != list_end(prio_list);
        e = list_next(e)) {
     struct thread *t = list_entry(e, struct thread, elem);
-    if (t->priority >= thread_to_insert->priority) {
+    if (get_max_prioriy(t) >= get_max_prioriy(thread_to_insert)) {
       list_insert(&t->elem, &thread_to_insert->elem);
       return;
     }
@@ -591,9 +642,46 @@ void prio_insert(struct thread* thread_to_insert, struct list* prio_list) {
   list_push_back(prio_list, &thread_to_insert->elem);
 }
 
-bool have_highest_prio(struct list* prio_list, struct thread* t) {
-  if (list_empty(prio_list))
+void prio_update(struct thread* thread_to_update, struct list* prio_list) {
+  list_remove(&thread_to_update->elem);
+  prio_insert(thread_to_update, prio_list);
+}
+
+bool have_highest_prio() {
+  if (list_empty(&prio_ready_list))
     return true;
-  struct thread* h = list_entry(list_back(prio_list), struct thread, elem);
-  return h->priority < t->priority;
+  else
+    return get_max_prioriy(list_entry(list_back(&prio_ready_list), struct thread, elem))
+      <= thread_get_priority();
+}
+
+static void remove_prio_elem(struct thread* t, int priority) {
+  for (int i = 0; i < t->donator_number; i++) {
+    if (t->donated_priority[i] == priority) {
+      t->donator_number--;
+      for (int j = i; j < t->donator_number; j++)
+        t->donated_priority[i] = t->donated_priority[i + 1];
+      break;
+    }
+  }
+}
+
+static void insert_prio_elem(struct thread* t, int priority) {
+  int pos = t->donator_number;
+  for (int i = 0; i < t->donator_number; i++) {
+    if (t->donated_priority[i] >= priority) {
+      pos = i; break;
+    }
+  }
+  for (int i = t->donator_number; i > pos; i--)
+    t->donated_priority[i] = t->donated_priority[i - 1];
+  t->donated_priority[pos] = priority;
+  t->donator_number++;
+}
+
+int get_max_prioriy(struct thread* t) {
+  if (t->donator_number != 0)
+    return t->donated_priority[t->donator_number - 1];
+  else
+    return t->priority;
 }

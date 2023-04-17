@@ -102,6 +102,12 @@ struct thread {
   int64_t tick_end;
   struct list_elem sleepelem;
 
+  /* Used for priority donation. */
+  int donator_number;
+  char donated_priority[PRI_MAX + 1];
+  int prio_set_during_donating;
+  struct thread *donated_thread;
+
   /* Owned by thread.c. */
   unsigned magic; /* Detects stack overflow. */
 };
@@ -145,6 +151,9 @@ void thread_yield(void);
 typedef void thread_action_func(struct thread* t, void* aux);
 void thread_foreach(thread_action_func*, void*);
 
+void donate_priority(struct thread* to);
+void cancel_donation(struct thread* t);
+int get_max_prioriy(struct thread* t);
 int thread_get_priority(void);
 void thread_set_priority(int);
 
@@ -155,6 +164,7 @@ int thread_get_load_avg(void);
 
 /* Priority functions. */
 void prio_insert(struct thread* thread_to_insert, struct list* prio_list);
-bool have_highest_prio(struct list* prio_list, struct thread* t);
+void prio_update(struct thread* thread_to_update, struct list* prio_list);
+bool have_highest_prio(void);
 
 #endif /* threads/thread.h */
