@@ -4,6 +4,7 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
+#include "synch.h"
 #include "thread.h"
 #include "threads/malloc.h"
 #include "threads/flags.h"
@@ -483,6 +484,7 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->status = THREAD_BLOCKED;
   strlcpy(t->name, name, sizeof t->name);
   t->stack = (uint8_t*)t + PGSIZE;
+  t->user_stack = NULL;
   t->priority = priority;
   t->pcb = NULL;
   t->magic = THREAD_MAGIC;
@@ -684,4 +686,44 @@ int get_max_prioriy(struct thread* t) {
     return t->donated_priority[t->donator_number - 1];
   else
     return t->priority;
+}
+
+/* Return the childthread corresponding to the tid.
+   Returns NULL if not present in the list. */
+struct childthread* get_childthread(struct list* childlist, tid_t tid) {
+  struct list_elem *e;
+  for (e = list_begin(childlist); e != list_end(childlist);
+       e = list_next(e)) {
+    struct childthread *ct = list_entry(e, struct childthread, elem);
+    if (ct->tid == tid) return ct;
+  }
+  return NULL;
+}
+
+/* Create and insert a new childthread. */
+struct childthread* add_childthread(struct list* childlist, tid_t tid) {
+  struct childthread *ct = (struct childthread *)malloc(sizeof(struct childthread));
+  ct->tid = tid; ct->joined = false;
+  lock_init(&ct->lock); cond_init(&ct->cond);
+  list_push_front(childlist, &ct->elem);
+  return ct;
+}
+
+/* Remove the loadlock corresponding to the tid. */
+void rm_childthread(struct list* childlist, tid_t tid) {
+  struct childthread *ct= get_childthread(childlist, tid);
+  if (ct != NULL) {
+    list_remove(&ct->elem);
+    free(ct);
+  }
+}
+
+/* Remove entire list. */
+void rm_childthreadlist(struct list* childlist) {
+  while (!list_empty(childlist)) {
+    struct childthread *ct = list_entry(
+      list_begin(childlist), struct childthread, elem);
+    list_pop_front(childlist);
+    free(ct);
+  }
 }

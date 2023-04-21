@@ -36,6 +36,9 @@ static void syscall_seek(int fd, off_t pos);
 static int syscall_tell(int fd);
 static int syscall_close(int fd);
 static int syscall_compute_e(int n);
+static tid_t syscall_pthread_create(stub_fun sfun, pthread_fun tfun, void* arg);
+static void syscall_pthread_exit(void);
+static void syscall_pthread_join(tid_t tid);
 
 /* Address verification */
 
@@ -299,6 +302,18 @@ static int syscall_compute_e(int n) {
   return sys_sum_to_e(n);
 }
 
+static tid_t syscall_pthread_create(stub_fun sfun, pthread_fun tfun, void* arg) {
+  return pthread_execute(sfun, tfun, arg);
+}
+
+static void syscall_pthread_exit() {
+  pthread_exit();
+}
+
+static void syscall_pthread_join(tid_t tid) {
+  pthread_join(tid);
+}
+
 static void syscall_handler(struct intr_frame* f UNUSED) {
   uint32_t* args = ((uint32_t*)f->esp);
 
@@ -390,6 +405,21 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     case SYS_COMPUTE_E:
       validate_argv(args + 1, 1);
       f->eax = syscall_compute_e(args[1]);
+      break;
+
+    case SYS_PT_CREATE:
+      validate_argv(args + 1, 3);
+      f->eax = syscall_pthread_create((stub_fun)args[1],
+        (pthread_fun)args[2], (void *)args[3]);
+      break;
+
+    case SYS_PT_EXIT:
+      syscall_pthread_exit();
+      break;
+
+    case SYS_PT_JOIN:
+      validate_argv(args + 1, 1);
+      syscall_pthread_join(args[1]);
       break;
 
     default:

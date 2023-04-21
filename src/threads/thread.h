@@ -4,6 +4,7 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
+#include "synch.h"
 #include "threads/synch.h"
 #include "threads/fixed-point.h"
 
@@ -91,7 +92,10 @@ struct thread {
   struct list_elem allelem;  /* List element for all threads list. */
 
   /* Shared between thread.c and synch.c. */
-  struct list_elem elem; /* List element. */
+  struct list_elem elem;     /* List element. */
+
+  struct uint8_t* user_stack; /* Saved User stack pointer. */
+  struct list_elem proc_elem; /* List element for process's threads set. */
 
 #ifdef USERPROG
   /* Owned by process.c. */
@@ -166,5 +170,18 @@ int thread_get_load_avg(void);
 void prio_insert(struct thread* thread_to_insert, struct list* prio_list);
 void prio_update(struct thread* thread_to_update, struct list* prio_list);
 bool have_highest_prio(void);
+
+/* Used to manage child processes */
+struct childthread {
+   tid_t tid;
+   struct lock lock;
+   struct condition cond;
+   bool joined;
+   struct list_elem elem;
+};
+struct childthread* get_childthread(struct list* childlist, tid_t tid);
+struct childthread* add_childthread(struct list* childlist, tid_t tid);
+void rm_childthread(struct list* childlist, tid_t tid);
+void rm_childthreadlist(struct list* childlist);
 
 #endif /* threads/thread.h */
