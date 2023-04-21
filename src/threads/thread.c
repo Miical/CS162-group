@@ -704,7 +704,7 @@ struct childthread* get_childthread(struct list* childlist, tid_t tid) {
 struct childthread* add_childthread(struct list* childlist, tid_t tid) {
   struct childthread *ct = (struct childthread *)malloc(sizeof(struct childthread));
   ct->tid = tid; ct->joined = false;
-  lock_init(&ct->lock); cond_init(&ct->cond);
+  lock_init(&ct->lock); sema_init(&ct->sema, 0);
   list_push_front(childlist, &ct->elem);
   return ct;
 }

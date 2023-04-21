@@ -175,7 +175,7 @@ bool have_highest_prio(void);
 struct childthread {
    tid_t tid;
    struct lock lock;
-   struct condition cond;
+   struct semaphore sema;
    bool joined;
    struct list_elem elem;
 };

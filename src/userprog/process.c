@@ -719,8 +719,16 @@ bool setup_thread(void (**eip)(void), void** esp, void* exec_) {
   *eip = (void(*)(void))sf;
 
   /* Setup stack. */
+  int id = 0;
+  struct list_elem *e;
+  for (e = list_begin(&pcb->threads); e != list_end(&pcb->threads);
+       e = list_next(e)) {
+    if (list_entry(e, struct childthread, elem)->tid == thread_tid()) break;
+    else id++;
+  }
+
   uint8_t* kpage;
-  size_t bias = (list_size(&pcb->threads) + 1) * PGSIZE;
+  size_t bias = (id + 2) * PGSIZE;
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     bool success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE - bias, kpage, true);
@@ -756,6 +764,7 @@ bool setup_thread(void (**eip)(void), void** esp, void* exec_) {
 tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
   tid_t tid;
   struct thread *t = thread_current();
+  process_activate();
 
   /* Create a name for new thread. */
   char *name = palloc_get_page(0);
@@ -827,21 +836,21 @@ static void start_pthread(void* exec_) {
 tid_t pthread_join(tid_t tid) {
   struct thread *t = thread_current();
   struct childthread *ct = get_childthread(&t->pcb->threads, tid);
+  lock_acquire(&ct->lock);
 
   if (ct == NULL)
     return TID_ERROR;
 
   tid_t ret;
-  lock_acquire(&ct->lock);
   if (ct->joined) {
     ret = TID_ERROR;
   } else {
-    cond_wait(&ct->cond, &ct->lock);
+    sema_down(&ct->sema);
     ct->joined = true;
     ret = tid;
   }
-  lock_release(&ct->lock);
 
+  lock_release(&ct->lock);
   return ret;
 }
 
@@ -856,9 +865,12 @@ tid_t pthread_join(tid_t tid) {
    now, it does nothing. */
 void pthread_exit(void) {
   struct thread *t = thread_current();
-  struct childthread *ct = get_childthread(&t->pcb->threads, t->tid);
-  lock_acquire(&ct->lock);
+  if (is_main_thread(t, t->pcb)) {
+    pthread_exit_main();
+    return;
+  }
 
+  struct childthread *ct = get_childthread(&t->pcb->threads, t->tid);
   /* Deallocate the thread's userspace stack. */
   process_activate();
   void* kpage = pagedir_get_page(t->pcb->pagedir, t->user_stack);
@@ -866,9 +878,8 @@ void pthread_exit(void) {
   palloc_free_page(kpage);
 
   /* Wake any waiters on this thread. */
-  cond_signal(&ct->cond, &ct->lock);
+  sema_up(&ct->sema);
 
-  lock_release(&ct->lock);
   thread_exit();
 }
 
@@ -880,4 +891,13 @@ void pthread_exit(void) {
 
    This function will be implemented in Project 2: Multithreading. For
    now, it does nothing. */
-void pthread_exit_main(void) {}
+void pthread_exit_main(void) {
+  struct list *childlist = &thread_current()->pcb->threads;
+  while (!list_empty(childlist)) {
+    struct childthread *ct = list_entry(
+      list_begin(childlist), struct childthread, elem);
+    if (!ct->joined) {
+      pthread_join(ct->tid);
+    }
+  }
+}
