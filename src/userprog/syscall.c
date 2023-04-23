@@ -413,6 +413,7 @@ static bool syscall_lock_release(lock_t* lock) {
 
 static bool syscall_sema_init(sema_t* sema, int val) {
   if (!valid_addr((char *)sema)) return false;
+  if (val < 0) return false;
   sema_t s = new_sema(val);
   if (s == -1) return false;
   *sema = s;

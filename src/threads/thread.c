@@ -179,22 +179,34 @@ void thread_print_stats(void) {
    PRIORITY, but no actual priority scheduling is implemented.
    Priority scheduling is the goal of Problem 1-3. */
 tid_t thread_create(const char* name, int priority, thread_func* function, void* aux) {
+  struct thread* t = thread_create_norun(name, priority, function, aux);
+  if (t == NULL) return TID_ERROR;
+
+  /* Add to run queue. */
+  thread_unblock(t);
+
+  if (!have_highest_prio())
+    thread_yield();
+
+  return t->tid;
+}
+
+struct thread* thread_create_norun(const char* name, int priority, thread_func* function, void* aux) {
   struct thread* t;
   struct kernel_thread_frame* kf;
   struct switch_entry_frame* ef;
   struct switch_threads_frame* sf;
-  tid_t tid;
 
   ASSERT(function != NULL);
 
   /* Allocate thread. */
   t = palloc_get_page(PAL_ZERO);
   if (t == NULL)
-    return TID_ERROR;
+    return NULL;
 
   /* Initialize thread. */
   init_thread(t, name, priority);
-  tid = t->tid = allocate_tid();
+  t->tid = allocate_tid();
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame(t, sizeof *kf);
@@ -211,14 +223,9 @@ tid_t thread_create(const char* name, int priority, thread_func* function, void*
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  /* Add to run queue. */
-  thread_unblock(t);
-
-  if (!have_highest_prio())
-    thread_yield();
-
-  return tid;
+  return t;
 }
+
 
 /* Puts the current thread to sleep.  It will not be scheduled
    again until awoken by thread_unblock().
@@ -705,7 +712,7 @@ struct childthread* add_childthread(struct list* childlist, tid_t tid) {
   struct childthread *ct = (struct childthread *)malloc(sizeof(struct childthread));
   ct->tid = tid; ct->joined = false;
   lock_init(&ct->lock); sema_init(&ct->sema, 0);
-  list_push_front(childlist, &ct->elem);
+  list_push_back(childlist, &ct->elem);
   return ct;
 }
 

@@ -728,7 +728,7 @@ bool setup_thread(void (**eip)(void), void** esp, void* exec_) {
   }
 
   uint8_t* kpage;
-  size_t bias = (id + 2) * PGSIZE;
+  size_t bias = (id * 2 + 2) * PGSIZE;
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     bool success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE - bias, kpage, true);
@@ -762,7 +762,6 @@ bool setup_thread(void (**eip)(void), void** esp, void* exec_) {
    should be similar to process_execute (). For now, it does nothing.
    */
 tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
-  tid_t tid;
   struct thread *t = thread_current();
   process_activate();
 
@@ -783,13 +782,17 @@ tid_t pthread_execute(stub_fun sf, pthread_fun tf, void* arg) {
   argt[2] = arg; argt[3] = t->pcb;
 
   /* Create a new thread. */
-  tid = thread_create(name, PRI_DEFAULT, start_pthread, argt);
+  struct thread *newt = thread_create_norun(name, PRI_DEFAULT, start_pthread, argt);
   palloc_free_page(name);
-  if (tid == TID_ERROR)
+  if (newt == NULL)
     return TID_ERROR;
-  add_childthread(&t->pcb->threads, tid);
+  add_childthread(&t->pcb->threads, newt->tid);
 
-  return tid;
+  thread_unblock(newt);
+  if (!have_highest_prio())
+    thread_yield();
+
+  return newt->tid;
 }
 
 /* A thread function that creates a new user thread and starts it
