@@ -338,6 +338,17 @@ void process_exit(void) {
     &cur->pcb->parent_pcb->childlist, pid);
   sema_up(&cp->sema);
 
+  /* Join child threads */
+  struct list *childlist = &cur->pcb->threads;
+
+  struct list_elem *e;
+  for (e = list_begin(childlist); e != list_end(childlist);
+       e = list_next(e)) {
+    struct childthread *ct = list_entry(e, struct childthread, elem);
+    if (!ct->joined || ct->join_main)
+      pthread_join(ct->tid);
+  }
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pcb->pagedir;
@@ -354,8 +365,10 @@ void process_exit(void) {
     pagedir_destroy(pd);
   }
 
-  /* Close all its open file descriptors */
-  close_all_fd_of_process(cur->tid);
+  /* Clean recourses. */
+  close_all_fd_of_process(pid);
+  rm_all_lock_of_process(pid);
+  rm_all_sema_of_process(pid);
 
   /* Close executable file */
   file_allow_write(cur->pcb->executable_file);

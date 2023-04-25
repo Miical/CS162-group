@@ -99,7 +99,7 @@ static int add_openedfile(struct file* f) {
   struct openedfile *new_openedfile =
     (struct openedfile *)malloc(sizeof(struct openedfile));
   new_openedfile->f = f;
-  new_openedfile->pid = thread_current()->tid;
+  new_openedfile->pid = thread_current()->pcb->main_thread->tid;
 
   uint32_t new_fd = 1;
   struct list_elem *e;
@@ -170,9 +170,16 @@ void close_all_fd_of_process(pid_t pid) {
 /* Synch. */
 struct list locklist;
 struct list semalist;
-int lock_cnt, sema_cnt;
-struct lockelem { struct lock lock; struct list_elem elem; int id; };
-struct semaelem { struct semaphore sema; struct list_elem elem; int id; };
+struct lockelem {
+  struct lock lock;
+  struct list_elem elem;
+  int id; int pid;
+};
+struct semaelem {
+  struct semaphore sema;
+  struct list_elem elem;
+  int id; int pid;
+};
 
 lock_t new_lock(void);
 sema_t new_sema(int initval);
@@ -184,9 +191,22 @@ lock_t new_lock() {
   if (le == NULL)
     return -128;
   lock_init(&le->lock);
-  le->id = ++lock_cnt;
+  le->pid = thread_current()->pcb->main_thread->tid;
+
+  char new_id = -128;
+  struct list_elem *e;
+  for (e = list_begin(&locklist); e != list_end(&locklist); e = list_next(e)) {
+    struct lockelem *t = list_entry(e, struct lockelem, elem);
+    if (t->id > new_id + 1) {
+      le->id = ++new_id;
+      list_push_back(&locklist, &le->elem);
+      return le->id;
+    }
+    else new_id = t->id;
+  }
+  le->id = ++new_id;
   list_push_back(&locklist, &le->elem);
-  return lock_cnt;
+  return le->id;
 }
 
 sema_t new_sema(int initval) {
@@ -194,9 +214,22 @@ sema_t new_sema(int initval) {
   if (se == NULL)
     return -128;
   sema_init(&se->sema, initval);
-  se->id = ++sema_cnt;
+  se->pid = thread_current()->pcb->main_thread->tid;
+
+  char new_id = -128;
+  struct list_elem *e;
+  for (e = list_begin(&semalist); e != list_end(&semalist); e = list_next(e)) {
+    struct semaelem *t = list_entry(e, struct semaelem, elem);
+    if (t->id > new_id + 1) {
+      se->id = ++new_id;
+      list_push_back(&semalist, &se->elem);
+      return se->id;
+    }
+    else new_id = t->id;
+  }
+  se->id = ++new_id;
   list_push_back(&semalist, &se->elem);
-  return sema_cnt;
+  return se->id;
 }
 
 struct lock *get_lock(int id) {
@@ -217,6 +250,36 @@ struct semaphore *get_sema(int id) {
   return NULL;
 }
 
+void rm_all_lock_of_process(pid_t pid) {
+  struct list_elem *e;
+  for (e = list_begin(&locklist); e != list_end(&locklist);) {
+    struct lockelem *le = list_entry(e, struct lockelem, elem);
+    if (le->pid == pid) {
+      struct list_elem *elem_to_rm = e;
+      e = list_next(e);
+      list_remove(elem_to_rm);
+      free(le);
+    } else {
+      e = list_next(e);
+    }
+  }
+}
+
+void rm_all_sema_of_process(pid_t pid) {
+  struct list_elem *e;
+  for (e = list_begin(&semalist); e != list_end(&semalist);) {
+    struct semaelem *se = list_entry(e, struct semaelem, elem);
+    if (se->pid == pid) {
+      struct list_elem *elem_to_rm = e;
+      e = list_next(e);
+      list_remove(elem_to_rm);
+      free(se);
+    } else {
+      e = list_next(e);
+    }
+  }
+}
+
 /* System call */
 
 static void syscall_handler(struct intr_frame*);
@@ -227,7 +290,6 @@ void syscall_init(void) {
   list_init(&locklist);
   list_init(&semalist);
   lock_init(&templock);
-  lock_cnt = sema_cnt = -128;
 }
 
 static void syscall_exit(int status) {
@@ -357,7 +419,7 @@ static int syscall_close(int fd) {
   int st;
   lock_acquire(&templock);
   struct openedfile *of = get_openedfile(fd);
-  if (of != NULL && of->pid == thread_current()->tid) {
+  if (of != NULL && of->pid == thread_current()->pcb->main_thread->tid) {
     file_close(of->f);
     rm_openedfile(fd);
     st = 1;
