@@ -98,6 +98,8 @@ struct openedfile {
 static int add_openedfile(struct file* f) {
   struct openedfile *new_openedfile =
     (struct openedfile *)malloc(sizeof(struct openedfile));
+  if (new_openedfile == NULL)
+    return -1;
   new_openedfile->f = f;
   new_openedfile->pid = thread_current()->pcb->main_thread->tid;
 
@@ -166,27 +168,26 @@ void close_all_fd_of_process(pid_t pid) {
   lock_release(&templock);
 }
 
-
 /* Synch. */
-struct list locklist;
-struct list semalist;
+
 struct lockelem {
   struct lock lock;
   struct list_elem elem;
-  int id; int pid;
+  char id; pid_t pid;
 };
 struct semaelem {
   struct semaphore sema;
   struct list_elem elem;
-  int id; int pid;
+  char id; pid_t pid;
 };
 
 lock_t new_lock(void);
 sema_t new_sema(int initval);
-struct lock *get_lock(int id);
-struct semaphore *get_sema(int id);
+struct lock *get_lock(lock_t id);
+struct semaphore *get_sema(sema_t id);
 
 lock_t new_lock() {
+  struct list *locklist = &thread_current()->pcb->user_lock_list;
   struct lockelem *le = (struct lockelem *) malloc(sizeof(struct lockelem));
   if (le == NULL)
     return -128;
@@ -195,21 +196,22 @@ lock_t new_lock() {
 
   char new_id = -128;
   struct list_elem *e;
-  for (e = list_begin(&locklist); e != list_end(&locklist); e = list_next(e)) {
+  for (e = list_begin(locklist); e != list_end(locklist); e = list_next(e)) {
     struct lockelem *t = list_entry(e, struct lockelem, elem);
     if (t->id > new_id + 1) {
       le->id = ++new_id;
-      list_push_back(&locklist, &le->elem);
+      list_insert(e, &le->elem);
       return le->id;
     }
     else new_id = t->id;
   }
   le->id = ++new_id;
-  list_push_back(&locklist, &le->elem);
+  list_push_back(locklist, &le->elem);
   return le->id;
 }
 
 sema_t new_sema(int initval) {
+  struct list *semalist = &thread_current()->pcb->user_sema_list;
   struct semaelem *se = (struct semaelem *) malloc(sizeof(struct semaelem));
   if (se == NULL)
     return -128;
@@ -218,65 +220,59 @@ sema_t new_sema(int initval) {
 
   char new_id = -128;
   struct list_elem *e;
-  for (e = list_begin(&semalist); e != list_end(&semalist); e = list_next(e)) {
+  for (e = list_begin(semalist); e != list_end(semalist); e = list_next(e)) {
     struct semaelem *t = list_entry(e, struct semaelem, elem);
     if (t->id > new_id + 1) {
       se->id = ++new_id;
-      list_push_back(&semalist, &se->elem);
+      list_insert(e, &se->elem);
       return se->id;
     }
     else new_id = t->id;
   }
   se->id = ++new_id;
-  list_push_back(&semalist, &se->elem);
+  list_push_back(semalist, &se->elem);
   return se->id;
 }
 
-struct lock *get_lock(int id) {
+struct lock *get_lock(lock_t id) {
+  struct list *locklist = &thread_current()->pcb->user_lock_list;
   struct list_elem *e;
-  for (e = list_begin(&locklist); e != list_end(&locklist); e = list_next(e)) {
+  for (e = list_begin(locklist); e != list_end(locklist); e = list_next(e)) {
     struct lockelem *le = list_entry(e, struct lockelem, elem);
     if (le->id == id) return &le->lock;
   }
   return NULL;
 }
 
-struct semaphore *get_sema(int id) {
+struct semaphore *get_sema(sema_t id) {
+  struct list *semalist = &thread_current()->pcb->user_sema_list;
   struct list_elem *e;
-  for (e = list_begin(&semalist); e != list_end(&semalist); e = list_next(e)) {
+  for (e = list_begin(semalist); e != list_end(semalist); e = list_next(e)) {
     struct semaelem *se = list_entry(e, struct semaelem, elem);
     if (se->id == id) return &se->sema;
   }
   return NULL;
 }
 
-void rm_all_lock_of_process(pid_t pid) {
+void rm_all_lock_of_process() {
+  struct list *locklist = &thread_current()->pcb->user_lock_list;
   struct list_elem *e;
-  for (e = list_begin(&locklist); e != list_end(&locklist);) {
+  for (e = list_begin(locklist); e != list_end(locklist);) {
     struct lockelem *le = list_entry(e, struct lockelem, elem);
-    if (le->pid == pid) {
-      struct list_elem *elem_to_rm = e;
-      e = list_next(e);
-      list_remove(elem_to_rm);
-      free(le);
-    } else {
-      e = list_next(e);
-    }
+    e = list_next(e);
+    list_remove(&le->elem);
+    free(le);
   }
 }
 
-void rm_all_sema_of_process(pid_t pid) {
+void rm_all_sema_of_process() {
+  struct list *semalist = &thread_current()->pcb->user_sema_list;
   struct list_elem *e;
-  for (e = list_begin(&semalist); e != list_end(&semalist);) {
+  for (e = list_begin(semalist); e != list_end(semalist);) {
     struct semaelem *se = list_entry(e, struct semaelem, elem);
-    if (se->pid == pid) {
-      struct list_elem *elem_to_rm = e;
-      e = list_next(e);
-      list_remove(elem_to_rm);
-      free(se);
-    } else {
-      e = list_next(e);
-    }
+    e = list_next(e);
+    list_remove(&se->elem);
+    free(se);
   }
 }
 
@@ -287,8 +283,6 @@ static void syscall_handler(struct intr_frame*);
 void syscall_init(void) {
   intr_register_int(0x30, 3, INTR_ON, syscall_handler, "syscall");
   list_init(&openedfiles);
-  list_init(&locklist);
-  list_init(&semalist);
   lock_init(&templock);
 }
 

@@ -200,6 +200,8 @@ static void start_process(void* file_name_) {
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
     list_init(&t->pcb->childlist);
     list_init(&t->pcb->threads);
+    list_init(&t->pcb->user_sema_list);
+    list_init(&t->pcb->user_lock_list);
     sema_init(&t->pcb->main_sema[0], 0);
     sema_init(&t->pcb->main_sema[1], 0);
   }
@@ -349,6 +351,11 @@ void process_exit(void) {
       pthread_join(ct->tid);
   }
 
+  /* Clean recourses. */
+  close_all_fd_of_process(pid);
+  rm_all_lock_of_process();
+  rm_all_sema_of_process();
+
   /* Destroy the current process's page directory and switch back
      to the kernel-only page directory. */
   pd = cur->pcb->pagedir;
@@ -364,11 +371,6 @@ void process_exit(void) {
     pagedir_activate(NULL);
     pagedir_destroy(pd);
   }
-
-  /* Clean recourses. */
-  close_all_fd_of_process(pid);
-  rm_all_lock_of_process(pid);
-  rm_all_sema_of_process(pid);
 
   /* Close executable file */
   file_allow_write(cur->pcb->executable_file);

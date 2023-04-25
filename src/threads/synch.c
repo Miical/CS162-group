@@ -186,10 +186,15 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!intr_context());
   ASSERT(!lock_held_by_current_thread(lock));
 
-  if (!lock_try_acquire(lock)) {
-    if (lock->holder->priority < thread_get_priority()) {
-      donate_priority(lock->holder);
+  if (active_sched_policy == SCHED_PRIO) {
+    if (!lock_try_acquire(lock)) {
+      if (lock->holder->priority < thread_get_priority()) {
+        donate_priority(lock->holder);
+      }
+      sema_down(&lock->semaphore);
+      lock->holder = thread_current();
     }
+  } else {
     sema_down(&lock->semaphore);
     lock->holder = thread_current();
   }

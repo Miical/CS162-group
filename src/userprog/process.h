@@ -58,6 +58,8 @@ struct process {
   struct file* executable_file; /* Process executable file */
   struct process* parent_pcb;   /* Pointer to parent process pcb */
   struct list childlist;        /* Child process list */
+  struct list user_sema_list;
+  struct list user_lock_list;
 };
 
 void userprog_init(void);
