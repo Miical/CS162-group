@@ -53,6 +53,7 @@ struct process {
   uint32_t* pagedir;            /* Page directory. */
   char process_name[16];        /* Name of the main thread */
   struct thread* main_thread;   /* Pointer to main thread */
+  struct semaphore main_sema[2];  /* Used for joining main thread */
   struct list threads;          /* threads list (exclude main thread) */
   struct file* executable_file; /* Process executable file */
   struct process* parent_pcb;   /* Pointer to parent process pcb */

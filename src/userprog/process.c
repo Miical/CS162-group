@@ -200,6 +200,8 @@ static void start_process(void* file_name_) {
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
     list_init(&t->pcb->childlist);
     list_init(&t->pcb->threads);
+    sema_init(&t->pcb->main_sema[0], 0);
+    sema_init(&t->pcb->main_sema[1], 0);
   }
 
   /* Create executable name */
@@ -321,9 +323,9 @@ int process_wait(pid_t child_pid) {
 
 /* Free the current process's resources. */
 void process_exit(void) {
-  struct thread* cur = thread_current();
+  struct thread* cur = thread_current()->pcb->main_thread;
   uint32_t* pd;
-  pid_t pid = thread_current()->tid;
+  pid_t pid = cur->tid;
 
   /* If this thread does not have a PCB, don't worry */
   if (cur->pcb == NULL) {
@@ -847,8 +849,13 @@ tid_t pthread_join(tid_t tid) {
   if (ct == NULL && tid != t->pcb->main_thread->tid)
     return TID_ERROR;
 
-  if (tid == t->pcb->main_thread->tid)
+  if (tid == t->pcb->main_thread->tid) {
+    ct = get_childthread(&t->pcb->threads, t->tid);
+    ct->join_main = true;
+    sema_up(&ct->sema);
+    sema_down(&t->pcb->main_sema[0]);
     return tid;
+  }
 
   lock_acquire(&ct->lock);
 
@@ -889,6 +896,7 @@ void pthread_exit(void) {
   palloc_free_page(kpage);
 
   /* Wake any waiters on this thread. */
+  if (ct->join_main) sema_up(&t->pcb->main_sema[1]);
   sema_up(&ct->sema);
 
   thread_exit();
@@ -904,14 +912,22 @@ void pthread_exit(void) {
    now, it does nothing. */
 void pthread_exit_main(void) {
   struct list *childlist = &thread_current()->pcb->threads;
-  while (!list_empty(childlist)) {
-    struct childthread *ct = list_entry(
-      list_begin(childlist), struct childthread, elem);
-    if (!ct->joined)
+  struct thread *t = thread_current();
+  bool completed = true;
+
+  struct list_elem *e;
+  for (e = list_begin(childlist); e != list_end(childlist);
+       e = list_next(e)) {
+    struct childthread *ct = list_entry(e, struct childthread, elem);
+    if (!ct->joined) {
       pthread_join(ct->tid);
-    list_pop_front(childlist);
+      if (ct->join_main) completed = false;
+    }
   }
 
-  printf("%s: exit(0)\n", thread_current()->pcb->process_name);
+  sema_up(&t->pcb->main_sema[0]);
+  if (!completed) sema_down(&t->pcb->main_sema[1]);
+
+  printf("%s: exit(0)\n", t->pcb->process_name);
   process_exit();
 }

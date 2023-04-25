@@ -710,7 +710,7 @@ struct childthread* get_childthread(struct list* childlist, tid_t tid) {
 /* Create and insert a new childthread. */
 struct childthread* add_childthread(struct list* childlist, tid_t tid) {
   struct childthread *ct = (struct childthread *)malloc(sizeof(struct childthread));
-  ct->tid = tid; ct->joined = false;
+  ct->tid = tid; ct->joined = false; ct->join_main = false;
   lock_init(&ct->lock); sema_init(&ct->sema, 0);
   list_push_back(childlist, &ct->elem);
   return ct;

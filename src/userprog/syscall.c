@@ -233,7 +233,8 @@ void syscall_init(void) {
 static void syscall_exit(int status) {
   struct thread* t = thread_current();
   if (t->pcb->parent_pcb != NULL)
-    get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = status;
+    get_childprocess(&t->pcb->parent_pcb->childlist,
+      t->pcb->main_thread->tid)->exitstatus = status;
   printf("%s: exit(%d)\n", t->pcb->process_name, status);
   process_exit();
 }

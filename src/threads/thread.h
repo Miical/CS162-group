@@ -179,6 +179,7 @@ struct childthread {
    struct lock lock;
    struct semaphore sema;
    bool joined;
+   bool join_main;
    struct list_elem elem;
 };
 struct childthread* get_childthread(struct list* childlist, tid_t tid);
