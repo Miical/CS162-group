@@ -182,7 +182,7 @@ struct semaphore *get_sema(int id);
 lock_t new_lock() {
   struct lockelem *le = (struct lockelem *) malloc(sizeof(struct lockelem));
   if (le == NULL)
-    return -1;
+    return -128;
   lock_init(&le->lock);
   le->id = ++lock_cnt;
   list_push_back(&locklist, &le->elem);
@@ -192,7 +192,7 @@ lock_t new_lock() {
 sema_t new_sema(int initval) {
   struct semaelem *se = (struct semaelem *) malloc(sizeof(struct semaelem));
   if (se == NULL)
-    return -1;
+    return -128;
   sema_init(&se->sema, initval);
   se->id = ++sema_cnt;
   list_push_back(&semalist, &se->elem);
@@ -227,7 +227,7 @@ void syscall_init(void) {
   list_init(&locklist);
   list_init(&semalist);
   lock_init(&templock);
-  lock_cnt = sema_cnt = 0;
+  lock_cnt = sema_cnt = -128;
 }
 
 static void syscall_exit(int status) {
@@ -386,7 +386,7 @@ static tid_t syscall_pthread_join(tid_t tid) {
 static bool syscall_lock_init(lock_t* lock) {
   if (!valid_addr((char *)lock)) return false;
   lock_t t = new_lock();
-  if (t == -1) return false;
+  if (t == -128) return false;
   *lock = t;
   return true;
 }
@@ -415,7 +415,7 @@ static bool syscall_sema_init(sema_t* sema, int val) {
   if (!valid_addr((char *)sema)) return false;
   if (val < 0) return false;
   sema_t s = new_sema(val);
-  if (s == -1) return false;
+  if (s == -128) return false;
   *sema = s;
   return true;
 }

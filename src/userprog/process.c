@@ -668,8 +668,10 @@ static bool setup_stack(void** esp) {
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE, kpage, true);
-    if (success)
-      thread_current()->user_stack = *esp = PHYS_BASE;
+    if (success) {
+      *esp = PHYS_BASE;
+      thread_current()->user_stack = *esp - PGSIZE;
+    }
     else
       palloc_free_page(kpage);
   }
@@ -728,13 +730,13 @@ bool setup_thread(void (**eip)(void), void** esp, void* exec_) {
   }
 
   uint8_t* kpage;
-  size_t bias = (id * 2 + 2) * PGSIZE;
+  size_t bias = (id + 2) * PGSIZE;
   kpage = palloc_get_page(PAL_USER | PAL_ZERO);
   if (kpage != NULL) {
     bool success = install_page(((uint8_t*)PHYS_BASE) - PGSIZE - bias, kpage, true);
     if (success) {
-      thread_current()->user_stack = *esp
-        = (void *)((uint8_t*)PHYS_BASE - bias);
+      *esp = (void *)((uint8_t*)PHYS_BASE - bias);
+      thread_current()->user_stack = *esp - PGSIZE;
     }
     else {
       palloc_free_page(kpage);
