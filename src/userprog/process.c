@@ -840,11 +840,17 @@ static void start_pthread(void* exec_) {
    now, it does nothing. */
 tid_t pthread_join(tid_t tid) {
   struct thread *t = thread_current();
-  struct childthread *ct = get_childthread(&t->pcb->threads, tid);
-  lock_acquire(&ct->lock);
-
-  if (ct == NULL)
+  if (t->tid == tid)
     return TID_ERROR;
+
+  struct childthread *ct = get_childthread(&t->pcb->threads, tid);
+  if (ct == NULL && tid != t->pcb->main_thread->tid)
+    return TID_ERROR;
+
+  if (tid == t->pcb->main_thread->tid)
+    return tid;
+
+  lock_acquire(&ct->lock);
 
   tid_t ret;
   if (ct->joined) {
@@ -901,8 +907,11 @@ void pthread_exit_main(void) {
   while (!list_empty(childlist)) {
     struct childthread *ct = list_entry(
       list_begin(childlist), struct childthread, elem);
-    if (!ct->joined) {
+    if (!ct->joined)
       pthread_join(ct->tid);
-    }
+    list_pop_front(childlist);
   }
+
+  printf("%s: exit(0)\n", thread_current()->pcb->process_name);
+  process_exit();
 }
