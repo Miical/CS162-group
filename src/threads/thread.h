@@ -4,7 +4,6 @@
 #include <debug.h>
 #include <list.h>
 #include <stdint.h>
-#include "synch.h"
 #include "threads/synch.h"
 #include "threads/fixed-point.h"
 
@@ -92,25 +91,12 @@ struct thread {
   struct list_elem allelem;  /* List element for all threads list. */
 
   /* Shared between thread.c and synch.c. */
-  struct list_elem elem;     /* List element. */
-
-  struct uint8_t* user_stack; /* Saved User stack pointer. */
-  struct list_elem proc_elem; /* List element for process's threads set. */
+  struct list_elem elem; /* List element. */
 
 #ifdef USERPROG
   /* Owned by process.c. */
   struct process* pcb; /* Process control block if this thread is a userprog */
 #endif
-
-  /* Used for sleeping. */
-  int64_t tick_end;
-  struct list_elem sleepelem;
-
-  /* Used for priority donation. */
-  int donator_number;
-  char donated_priority[PRI_MAX + 1];
-  int prio_set_during_donating;
-  struct thread *donated_thread;
 
   /* Owned by thread.c. */
   unsigned magic; /* Detects stack overflow. */
@@ -140,8 +126,6 @@ void thread_print_stats(void);
 
 typedef void thread_func(void* aux);
 tid_t thread_create(const char* name, int priority, thread_func*, void*);
-struct thread* thread_create_norun(const char* name, int priority,
-   thread_func* function, void* aux);
 
 void thread_block(void);
 void thread_unblock(struct thread*);
@@ -157,9 +141,6 @@ void thread_yield(void);
 typedef void thread_action_func(struct thread* t, void* aux);
 void thread_foreach(thread_action_func*, void*);
 
-void donate_priority(struct thread* to);
-void cancel_donation(struct thread* t);
-int get_max_prioriy(struct thread* t);
 int thread_get_priority(void);
 void thread_set_priority(int);
 
@@ -167,24 +148,5 @@ int thread_get_nice(void);
 void thread_set_nice(int);
 int thread_get_recent_cpu(void);
 int thread_get_load_avg(void);
-
-/* Priority functions. */
-void prio_insert(struct thread* thread_to_insert, struct list* prio_list);
-void prio_update(struct thread* thread_to_update, struct list* prio_list);
-bool have_highest_prio(void);
-
-/* Used to manage child processes */
-struct childthread {
-   tid_t tid;
-   struct lock lock;
-   struct semaphore sema;
-   bool joined;
-   bool join_main;
-   struct list_elem elem;
-};
-struct childthread* get_childthread(struct list* childlist, tid_t tid);
-struct childthread* add_childthread(struct list* childlist, tid_t tid);
-void rm_childthread(struct list* childlist, tid_t tid);
-void rm_childthreadlist(struct list* childlist);
 
 #endif /* threads/thread.h */

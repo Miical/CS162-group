@@ -4,9 +4,6 @@
 #include <random.h>
 #include <stdio.h>
 #include <string.h>
-#include "synch.h"
-#include "thread.h"
-#include "threads/malloc.h"
 #include "threads/flags.h"
 #include "threads/interrupt.h"
 #include "threads/intr-stubs.h"
@@ -26,7 +23,6 @@
 /* List of processes in THREAD_READY state, that is, processes
    that are ready to run but not actually running. */
 static struct list fifo_ready_list;
-static struct list prio_ready_list;
 
 /* List of all processes.  Processes are added to this list
    when they are first scheduled and removed when they exit. */
@@ -112,7 +108,6 @@ void thread_init(void) {
 
   lock_init(&tid_lock);
   list_init(&fifo_ready_list);
-  list_init(&prio_ready_list);
   list_init(&all_list);
 
   /* Set up a thread structure for the running thread. */
@@ -179,34 +174,22 @@ void thread_print_stats(void) {
    PRIORITY, but no actual priority scheduling is implemented.
    Priority scheduling is the goal of Problem 1-3. */
 tid_t thread_create(const char* name, int priority, thread_func* function, void* aux) {
-  struct thread* t = thread_create_norun(name, priority, function, aux);
-  if (t == NULL) return TID_ERROR;
-
-  /* Add to run queue. */
-  thread_unblock(t);
-
-  if (!have_highest_prio())
-    thread_yield();
-
-  return t->tid;
-}
-
-struct thread* thread_create_norun(const char* name, int priority, thread_func* function, void* aux) {
   struct thread* t;
   struct kernel_thread_frame* kf;
   struct switch_entry_frame* ef;
   struct switch_threads_frame* sf;
+  tid_t tid;
 
   ASSERT(function != NULL);
 
   /* Allocate thread. */
   t = palloc_get_page(PAL_ZERO);
   if (t == NULL)
-    return NULL;
+    return TID_ERROR;
 
   /* Initialize thread. */
   init_thread(t, name, priority);
-  t->tid = allocate_tid();
+  tid = t->tid = allocate_tid();
 
   /* Stack frame for kernel_thread(). */
   kf = alloc_frame(t, sizeof *kf);
@@ -223,9 +206,11 @@ struct thread* thread_create_norun(const char* name, int priority, thread_func* 
   sf->eip = switch_entry;
   sf->ebp = 0;
 
-  return t;
-}
+  /* Add to run queue. */
+  thread_unblock(t);
 
+  return tid;
+}
 
 /* Puts the current thread to sleep.  It will not be scheduled
    again until awoken by thread_unblock().
@@ -243,7 +228,7 @@ void thread_block(void) {
 
 /* Places a thread on the ready structure appropriate for the
    current active scheduling policy.
-
+   
    This function must be called with interrupts turned off. */
 static void thread_enqueue(struct thread* t) {
   ASSERT(intr_get_level() == INTR_OFF);
@@ -251,8 +236,6 @@ static void thread_enqueue(struct thread* t) {
 
   if (active_sched_policy == SCHED_FIFO)
     list_push_back(&fifo_ready_list, &t->elem);
-  else if (active_sched_policy == SCHED_PRIO)
-    prio_insert(t, &prio_ready_list);
   else
     PANIC("Unimplemented scheduling policy value: %d", active_sched_policy);
 }
@@ -345,57 +328,10 @@ void thread_foreach(thread_action_func* func, void* aux) {
 }
 
 /* Sets the current thread's priority to NEW_PRIORITY. */
-void thread_set_priority(int new_priority) {
-  struct thread *t = thread_current();
-  if (t->donator_number != 0) {
-    t->prio_set_during_donating = new_priority;
-    return;
-  }
-
-  t->priority = new_priority;
-  if (!have_highest_prio())
-    thread_yield();
-}
-
-static void insert_prio_elem(struct thread* t, int priority);
-static void remove_prio_elem(struct thread* t, int priority);
-
-static void update_donation(struct thread* t, int old_prio) {
-  int new_prio;
-  while (t->donated_thread != NULL && (new_prio = get_max_prioriy(t)) != old_prio) {
-    int next_old_prio = get_max_prioriy(t->donated_thread);
-    remove_prio_elem(t->donated_thread, old_prio);
-    insert_prio_elem(t->donated_thread, new_prio);
-    t = t->donated_thread; old_prio = next_old_prio;
-  }
-  if (t->status == THREAD_READY)
-    prio_update(t, &prio_ready_list);
-}
+void thread_set_priority(int new_priority) { thread_current()->priority = new_priority; }
 
 /* Returns the current thread's priority. */
-int thread_get_priority(void) {
-  return get_max_prioriy(thread_current());
-}
-
-void donate_priority(struct thread* to) {
-  thread_current()->donated_thread = to;
-  int p = thread_get_priority(), old_prio = get_max_prioriy(to);
-  insert_prio_elem(to, p);
-  update_donation(to, old_prio);
-}
-
-void cancel_donation(struct thread* t) {
-  struct thread* to = t->donated_thread;
-  t->donated_thread = NULL;
-  int p = get_max_prioriy(t), old_prio = get_max_prioriy(to);
-  remove_prio_elem(to, p);
-
-  if (to->donator_number == 0 && to->prio_set_during_donating != -1) {
-    to->priority = to->prio_set_during_donating;
-    to->prio_set_during_donating = -1;
-  }
-  update_donation(to, old_prio);
-}
+int thread_get_priority(void) { return thread_current()->priority; }
 
 /* Sets the current thread's nice value to NICE. */
 void thread_set_nice(int nice UNUSED) { /* Not yet implemented. */
@@ -491,15 +427,9 @@ static void init_thread(struct thread* t, const char* name, int priority) {
   t->status = THREAD_BLOCKED;
   strlcpy(t->name, name, sizeof t->name);
   t->stack = (uint8_t*)t + PGSIZE;
-  t->user_stack = NULL;
   t->priority = priority;
   t->pcb = NULL;
   t->magic = THREAD_MAGIC;
-
-  memset(t->donated_priority, 0, sizeof(t->donated_priority));
-  t->donator_number = 0;
-  t->prio_set_during_donating = -1;
-  t->donated_thread = NULL;
 
   old_level = intr_disable();
   list_push_back(&all_list, &t->allelem);
@@ -527,10 +457,7 @@ static struct thread* thread_schedule_fifo(void) {
 
 /* Strict priority scheduler */
 static struct thread* thread_schedule_prio(void) {
-  if (!list_empty(&prio_ready_list))
-    return list_entry(list_pop_back(&prio_ready_list), struct thread, elem);
-  else
-    return idle_thread;
+  PANIC("Unimplemented scheduler policy: \"-sched=prio\"");
 }
 
 /* Fair priority scheduler */
@@ -637,100 +564,3 @@ static tid_t allocate_tid(void) {
 /* Offset of `stack' member within `struct thread'.
    Used by switch.S, which can't figure it out on its own. */
 uint32_t thread_stack_ofs = offsetof(struct thread, stack);
-
-void prio_insert(struct thread* thread_to_insert, struct list* prio_list) {
-  struct list_elem *e;
-  for (e = list_begin(prio_list); e != list_end(prio_list);
-       e = list_next(e)) {
-    struct thread *t = list_entry(e, struct thread, elem);
-    if (get_max_prioriy(t) >= get_max_prioriy(thread_to_insert)) {
-      list_insert(&t->elem, &thread_to_insert->elem);
-      return;
-    }
-  }
-  list_push_back(prio_list, &thread_to_insert->elem);
-}
-
-void prio_update(struct thread* thread_to_update, struct list* prio_list) {
-  list_remove(&thread_to_update->elem);
-  prio_insert(thread_to_update, prio_list);
-}
-
-bool have_highest_prio() {
-  if (list_empty(&prio_ready_list))
-    return true;
-  else
-    return get_max_prioriy(list_entry(list_back(&prio_ready_list), struct thread, elem))
-      <= thread_get_priority();
-}
-
-static void remove_prio_elem(struct thread* t, int priority) {
-  for (int i = 0; i < t->donator_number; i++) {
-    if (t->donated_priority[i] == priority) {
-      t->donator_number--;
-      for (int j = i; j < t->donator_number; j++)
-        t->donated_priority[i] = t->donated_priority[i + 1];
-      break;
-    }
-  }
-}
-
-static void insert_prio_elem(struct thread* t, int priority) {
-  int pos = t->donator_number;
-  for (int i = 0; i < t->donator_number; i++) {
-    if (t->donated_priority[i] >= priority) {
-      pos = i; break;
-    }
-  }
-  for (int i = t->donator_number; i > pos; i--)
-    t->donated_priority[i] = t->donated_priority[i - 1];
-  t->donated_priority[pos] = priority;
-  t->donator_number++;
-}
-
-int get_max_prioriy(struct thread* t) {
-  if (t->donator_number != 0)
-    return t->donated_priority[t->donator_number - 1];
-  else
-    return t->priority;
-}
-
-/* Return the childthread corresponding to the tid.
-   Returns NULL if not present in the list. */
-struct childthread* get_childthread(struct list* childlist, tid_t tid) {
-  struct list_elem *e;
-  for (e = list_begin(childlist); e != list_end(childlist);
-       e = list_next(e)) {
-    struct childthread *ct = list_entry(e, struct childthread, elem);
-    if (ct->tid == tid) return ct;
-  }
-  return NULL;
-}
-
-/* Create and insert a new childthread. */
-struct childthread* add_childthread(struct list* childlist, tid_t tid) {
-  struct childthread *ct = (struct childthread *)malloc(sizeof(struct childthread));
-  ct->tid = tid; ct->joined = false; ct->join_main = false;
-  lock_init(&ct->lock); sema_init(&ct->sema, 0);
-  list_push_back(childlist, &ct->elem);
-  return ct;
-}
-
-/* Remove the loadlock corresponding to the tid. */
-void rm_childthread(struct list* childlist, tid_t tid) {
-  struct childthread *ct= get_childthread(childlist, tid);
-  if (ct != NULL) {
-    list_remove(&ct->elem);
-    free(ct);
-  }
-}
-
-/* Remove entire list. */
-void rm_childthreadlist(struct list* childlist) {
-  while (!list_empty(childlist)) {
-    struct childthread *ct = list_entry(
-      list_begin(childlist), struct childthread, elem);
-    list_pop_front(childlist);
-    free(ct);
-  }
-}

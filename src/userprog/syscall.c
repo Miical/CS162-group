@@ -19,9 +19,6 @@
 #include "devices/shutdown.h"
 #include "lib/float.h"
 
-typedef char lock_t;
-typedef char sema_t;
-
 struct lock templock;
 
 static void syscall_exit(int status);
@@ -39,31 +36,16 @@ static void syscall_seek(int fd, off_t pos);
 static int syscall_tell(int fd);
 static int syscall_close(int fd);
 static int syscall_compute_e(int n);
-static tid_t syscall_pthread_create(stub_fun sfun, pthread_fun tfun, void* arg);
-static void syscall_pthread_exit(void);
-static tid_t syscall_pthread_join(tid_t tid);
-static bool syscall_lock_init(lock_t* lock);
-static bool syscall_lock_acquire(lock_t* lock);
-static bool syscall_lock_release(lock_t* lock);
-static bool syscall_sema_init(sema_t* sema, int val);
-static bool syscall_sema_down(sema_t* sema);
-static bool syscall_sema_up(sema_t* sema);
-static tid_t syscall_get_tid(void);
-
 
 /* Address verification */
 
 static void syscall_exit(int status);
 
-static bool valid_addr(const char* buffer) {
-  return !(buffer == NULL || !is_user_vaddr(buffer)
-    || pagedir_get_page(thread_current()->pcb->pagedir, buffer) == NULL);
-}
-
 static void validate_byte(const char* buffer) {
-  if (!valid_addr(buffer)) {
-    syscall_exit(-1);
-  }
+  if (buffer == NULL || !is_user_vaddr(buffer)
+    || pagedir_get_page(thread_current()->pcb->pagedir, buffer) == NULL) {
+      syscall_exit(-1);
+    }
 }
 
 static void validate_string(const char* string) {
@@ -98,10 +80,8 @@ struct openedfile {
 static int add_openedfile(struct file* f) {
   struct openedfile *new_openedfile =
     (struct openedfile *)malloc(sizeof(struct openedfile));
-  if (new_openedfile == NULL)
-    return -1;
   new_openedfile->f = f;
-  new_openedfile->pid = thread_current()->pcb->main_thread->tid;
+  new_openedfile->pid = thread_current()->tid;
 
   uint32_t new_fd = 1;
   struct list_elem *e;
@@ -168,114 +148,6 @@ void close_all_fd_of_process(pid_t pid) {
   lock_release(&templock);
 }
 
-/* Synch. */
-
-struct lockelem {
-  struct lock lock;
-  struct list_elem elem;
-  char id; pid_t pid;
-};
-struct semaelem {
-  struct semaphore sema;
-  struct list_elem elem;
-  char id; pid_t pid;
-};
-
-lock_t new_lock(void);
-sema_t new_sema(int initval);
-struct lock *get_lock(lock_t id);
-struct semaphore *get_sema(sema_t id);
-
-lock_t new_lock() {
-  struct list *locklist = &thread_current()->pcb->user_lock_list;
-  struct lockelem *le = (struct lockelem *) malloc(sizeof(struct lockelem));
-  if (le == NULL)
-    return -128;
-  lock_init(&le->lock);
-  le->pid = thread_current()->pcb->main_thread->tid;
-
-  char new_id = -128;
-  struct list_elem *e;
-  for (e = list_begin(locklist); e != list_end(locklist); e = list_next(e)) {
-    struct lockelem *t = list_entry(e, struct lockelem, elem);
-    if (t->id > new_id + 1) {
-      le->id = ++new_id;
-      list_insert(e, &le->elem);
-      return le->id;
-    }
-    else new_id = t->id;
-  }
-  le->id = ++new_id;
-  list_push_back(locklist, &le->elem);
-  return le->id;
-}
-
-sema_t new_sema(int initval) {
-  struct list *semalist = &thread_current()->pcb->user_sema_list;
-  struct semaelem *se = (struct semaelem *) malloc(sizeof(struct semaelem));
-  if (se == NULL)
-    return -128;
-  sema_init(&se->sema, initval);
-  se->pid = thread_current()->pcb->main_thread->tid;
-
-  char new_id = -128;
-  struct list_elem *e;
-  for (e = list_begin(semalist); e != list_end(semalist); e = list_next(e)) {
-    struct semaelem *t = list_entry(e, struct semaelem, elem);
-    if (t->id > new_id + 1) {
-      se->id = ++new_id;
-      list_insert(e, &se->elem);
-      return se->id;
-    }
-    else new_id = t->id;
-  }
-  se->id = ++new_id;
-  list_push_back(semalist, &se->elem);
-  return se->id;
-}
-
-struct lock *get_lock(lock_t id) {
-  struct list *locklist = &thread_current()->pcb->user_lock_list;
-  struct list_elem *e;
-  for (e = list_begin(locklist); e != list_end(locklist); e = list_next(e)) {
-    struct lockelem *le = list_entry(e, struct lockelem, elem);
-    if (le->id == id) return &le->lock;
-  }
-  return NULL;
-}
-
-struct semaphore *get_sema(sema_t id) {
-  struct list *semalist = &thread_current()->pcb->user_sema_list;
-  struct list_elem *e;
-  for (e = list_begin(semalist); e != list_end(semalist); e = list_next(e)) {
-    struct semaelem *se = list_entry(e, struct semaelem, elem);
-    if (se->id == id) return &se->sema;
-  }
-  return NULL;
-}
-
-void rm_all_lock_of_process() {
-  struct list *locklist = &thread_current()->pcb->user_lock_list;
-  struct list_elem *e;
-  for (e = list_begin(locklist); e != list_end(locklist);) {
-    struct lockelem *le = list_entry(e, struct lockelem, elem);
-    e = list_next(e);
-    list_remove(&le->elem);
-    free(le);
-  }
-}
-
-void rm_all_sema_of_process() {
-  struct list *semalist = &thread_current()->pcb->user_sema_list;
-  struct list_elem *e;
-  for (e = list_begin(semalist); e != list_end(semalist);) {
-    struct semaelem *se = list_entry(e, struct semaelem, elem);
-    e = list_next(e);
-    list_remove(&se->elem);
-    free(se);
-  }
-}
-
 /* System call */
 
 static void syscall_handler(struct intr_frame*);
@@ -289,8 +161,7 @@ void syscall_init(void) {
 static void syscall_exit(int status) {
   struct thread* t = thread_current();
   if (t->pcb->parent_pcb != NULL)
-    get_childprocess(&t->pcb->parent_pcb->childlist,
-      t->pcb->main_thread->tid)->exitstatus = status;
+    get_childprocess(&t->pcb->parent_pcb->childlist, t->tid)->exitstatus = status;
   printf("%s: exit(%d)\n", t->pcb->process_name, status);
   process_exit();
 }
@@ -413,7 +284,7 @@ static int syscall_close(int fd) {
   int st;
   lock_acquire(&templock);
   struct openedfile *of = get_openedfile(fd);
-  if (of != NULL && of->pid == thread_current()->pcb->main_thread->tid) {
+  if (of != NULL && of->pid == thread_current()->tid) {
     file_close(of->f);
     rm_openedfile(fd);
     st = 1;
@@ -426,76 +297,6 @@ static int syscall_close(int fd) {
 
 static int syscall_compute_e(int n) {
   return sys_sum_to_e(n);
-}
-
-static tid_t syscall_pthread_create(stub_fun sfun, pthread_fun tfun, void* arg) {
-  return pthread_execute(sfun, tfun, arg);
-}
-
-static void syscall_pthread_exit() {
-  pthread_exit();
-}
-
-static tid_t syscall_pthread_join(tid_t tid) {
-  return pthread_join(tid);
-}
-
-static bool syscall_lock_init(lock_t* lock) {
-  if (!valid_addr((char *)lock)) return false;
-  lock_t t = new_lock();
-  if (t == -128) return false;
-  *lock = t;
-  return true;
-}
-
-static bool syscall_lock_acquire(lock_t* lock) {
-  if (!valid_addr((char *)lock)) return false;
-  struct lock *t = get_lock(*lock);
-  if (t == NULL) return false;
-  if (lock_held_by_current_thread(t)) return false;
-
-  lock_acquire(t);
-  return true;
-}
-
-static bool syscall_lock_release(lock_t* lock) {
-  if (!valid_addr((char *)lock)) return false;
-  struct lock *t = get_lock(*lock);
-  if (t == NULL) return false;
-  if (!lock_held_by_current_thread(t)) return false;
-
-  lock_release(t);
-  return true;
-}
-
-static bool syscall_sema_init(sema_t* sema, int val) {
-  if (!valid_addr((char *)sema)) return false;
-  if (val < 0) return false;
-  sema_t s = new_sema(val);
-  if (s == -128) return false;
-  *sema = s;
-  return true;
-}
-
-static bool syscall_sema_down(sema_t* sema) {
-  if (!valid_addr((char *)sema)) return false;
-
-  struct semaphore *s = get_sema(*sema);
-  if (s == NULL) return false;
-  sema_down(s);
-  return true;
-}
-
-static bool syscall_sema_up(sema_t* sema) {
-  if (!valid_addr((char *)sema)) return false;
-  struct semaphore *s = get_sema(*sema);
-  if (s == NULL) return false;
-  sema_up(s);
-  return true;
-}
-
-static tid_t syscall_get_tid() {
-  return thread_tid();
 }
 
 static void syscall_handler(struct intr_frame* f UNUSED) {
@@ -589,55 +390,6 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     case SYS_COMPUTE_E:
       validate_argv(args + 1, 1);
       f->eax = syscall_compute_e(args[1]);
-      break;
-
-    case SYS_PT_CREATE:
-      validate_argv(args + 1, 3);
-      f->eax = syscall_pthread_create((stub_fun)args[1],
-        (pthread_fun)args[2], (void *)args[3]);
-      break;
-
-    case SYS_PT_EXIT:
-      syscall_pthread_exit();
-      break;
-
-    case SYS_PT_JOIN:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_pthread_join(args[1]);
-      break;
-
-    case SYS_LOCK_INIT:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_lock_init((lock_t *)args[1]);
-      break;
-
-    case SYS_LOCK_ACQUIRE:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_lock_acquire((lock_t *)args[1]);
-      break;
-
-    case SYS_LOCK_RELEASE:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_lock_release((lock_t *)args[1]);
-      break;
-
-    case SYS_SEMA_INIT:
-      validate_argv(args + 1, 2);
-      f->eax = syscall_sema_init((sema_t *)args[1], (int)args[2]);
-      break;
-
-    case SYS_SEMA_DOWN:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_sema_down((sema_t *)args[1]);
-      break;
-
-    case SYS_SEMA_UP:
-      validate_argv(args + 1, 1);
-      f->eax = syscall_sema_up((sema_t *)args[1]);
-      break;
-
-    case SYS_GET_TID:
-      f->eax = syscall_get_tid();
       break;
 
     default:

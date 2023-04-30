@@ -29,9 +29,6 @@
 #include "threads/synch.h"
 #include <stdio.h>
 #include <string.h>
-#include "interrupt.h"
-#include "synch.h"
-#include "thread.h"
 #include "threads/interrupt.h"
 #include "threads/thread.h"
 
@@ -95,8 +92,6 @@ bool sema_try_down(struct semaphore* sema) {
   return success;
 }
 
-static struct thread* pop_max_prio(struct list* prio_list);
-
 /* Up or "V" operation on a semaphore.  Increments SEMA's value
    and wakes up one thread of those waiting for SEMA, if any.
 
@@ -107,17 +102,10 @@ void sema_up(struct semaphore* sema) {
   ASSERT(sema != NULL);
 
   old_level = intr_disable();
-  if (!list_empty(&sema->waiters)) {
-    struct thread *t = pop_max_prio(&sema->waiters);
-    thread_unblock(t);
-    if (t->donated_thread != NULL)
-      cancel_donation(t);
-  }
+  if (!list_empty(&sema->waiters))
+    thread_unblock(list_entry(list_pop_front(&sema->waiters), struct thread, elem));
   sema->value++;
   intr_set_level(old_level);
-
-  if (!intr_context() && !have_highest_prio())
-    thread_yield();
 }
 
 static void sema_test_helper(void* sema_);
@@ -186,18 +174,8 @@ void lock_acquire(struct lock* lock) {
   ASSERT(!intr_context());
   ASSERT(!lock_held_by_current_thread(lock));
 
-  if (active_sched_policy == SCHED_PRIO) {
-    if (!lock_try_acquire(lock)) {
-      if (lock->holder->priority < thread_get_priority()) {
-        donate_priority(lock->holder);
-      }
-      sema_down(&lock->semaphore);
-      lock->holder = thread_current();
-    }
-  } else {
-    sema_down(&lock->semaphore);
-    lock->holder = thread_current();
-  }
+  sema_down(&lock->semaphore);
+  lock->holder = thread_current();
 }
 
 /* Tries to acquires LOCK and returns true if successful or false
@@ -302,10 +280,7 @@ void rw_lock_release(struct rw_lock* rw_lock, bool reader) {
 struct semaphore_elem {
   struct list_elem elem;      /* List element. */
   struct semaphore semaphore; /* This semaphore. */
-  struct thread *t;
 };
-
-static struct semaphore_elem* cond_pop_max_prio(struct list* cond_prio_list);
 
 /* Initializes condition variable COND.  A condition variable
    allows one piece of code to signal a condition and cooperating
@@ -345,7 +320,6 @@ void cond_wait(struct condition* cond, struct lock* lock) {
   ASSERT(lock_held_by_current_thread(lock));
 
   sema_init(&waiter.semaphore, 0);
-  waiter.t = thread_current();
   list_push_back(&cond->waiters, &waiter.elem);
   lock_release(lock);
   sema_down(&waiter.semaphore);
@@ -366,7 +340,7 @@ void cond_signal(struct condition* cond, struct lock* lock UNUSED) {
   ASSERT(lock_held_by_current_thread(lock));
 
   if (!list_empty(&cond->waiters))
-    sema_up(&cond_pop_max_prio(&cond->waiters)->semaphore);
+    sema_up(&list_entry(list_pop_front(&cond->waiters), struct semaphore_elem, elem)->semaphore);
 }
 
 /* Wakes up all threads, if any, waiting on COND (protected by
@@ -381,38 +355,4 @@ void cond_broadcast(struct condition* cond, struct lock* lock) {
 
   while (!list_empty(&cond->waiters))
     cond_signal(cond, lock);
-}
-
-static struct semaphore_elem* cond_pop_max_prio(struct list* cond_prio_list) {
-  int max_prio = -1;
-  struct list_elem *e;
-  for (e = list_begin(cond_prio_list); e != list_end(cond_prio_list); e = list_next(e)) {
-    struct semaphore_elem *s = list_entry(e, struct semaphore_elem, elem);
-    if (get_max_prioriy(s->t) >= max_prio) max_prio = get_max_prioriy(s->t);
-  }
-  for (e = list_begin(cond_prio_list); e != list_end(cond_prio_list); e = list_next(e)) {
-    struct semaphore_elem *s = list_entry(e, struct semaphore_elem, elem);
-    if (get_max_prioriy(s->t) == max_prio) {
-      list_remove(&s->elem);
-      return s;
-    }
-  }
-  return NULL;
-}
-
-static struct thread* pop_max_prio(struct list* prio_list) {
-  int max_prio = -1;
-  struct list_elem *e;
-  for (e = list_begin(prio_list); e != list_end(prio_list); e = list_next(e)) {
-    struct thread *t = list_entry(e, struct thread, elem);
-    if (get_max_prioriy(t) >= max_prio) max_prio = get_max_prioriy(t);
-  }
-  for (e = list_begin(prio_list); e != list_end(prio_list); e = list_next(e)) {
-    struct thread *t = list_entry(e, struct thread, elem);
-    if (get_max_prioriy(t) == max_prio) {
-      list_remove(&t->elem);
-      return t;
-    }
-  }
-  return NULL;
 }
