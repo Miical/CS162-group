@@ -80,6 +80,8 @@ struct openedfile {
 static int add_openedfile(struct file* f) {
   struct openedfile *new_openedfile =
     (struct openedfile *)malloc(sizeof(struct openedfile));
+  if (new_openedfile == NULL)
+    return -1;
   new_openedfile->f = f;
   new_openedfile->pid = thread_current()->tid;
 

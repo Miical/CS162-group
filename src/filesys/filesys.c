@@ -30,7 +30,10 @@ void filesys_init(bool format) {
 
 /* Shuts down the file system module, writing any unwritten data
    to disk. */
-void filesys_done(void) { free_map_close(); }
+void filesys_done(void) {
+  free_map_close();
+  write_back_all(fs_device);
+}
 
 /* Creates a file named NAME with the given INITIAL_SIZE.
    Returns true if successful, false otherwise.
