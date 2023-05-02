@@ -4,6 +4,7 @@
 #include <list.h>
 #include "filesys/filesys.h"
 #include "filesys/inode.h"
+#include "inode.h"
 #include "threads/malloc.h"
 
 /* A directory. */
@@ -22,7 +23,7 @@ struct dir_entry {
 /* Creates a directory with space for ENTRY_CNT entries in the
    given SECTOR.  Returns true if successful, false on failure. */
 bool dir_create(block_sector_t sector, size_t entry_cnt) {
-  return inode_create(sector, entry_cnt * sizeof(struct dir_entry));
+  return inode_create(sector, entry_cnt * sizeof(struct dir_entry), true);
 }
 
 /* Opens and returns the directory for the given INODE, of which
@@ -184,6 +185,19 @@ done:
   return success;
 }
 
+size_t dir_entry_number(struct dir* dir) {
+  size_t num = 0;
+  off_t pos = 0;
+
+  struct dir_entry e;
+  while (inode_read_at(dir->inode, &e, sizeof e, pos) == sizeof e) {
+    pos += sizeof e;
+    if (e.in_use)
+      num++;
+  }
+  return num;
+}
+
 /* Reads the next directory entry in DIR and stores the name in
    NAME.  Returns true if successful, false if the directory
    contains no more entries. */
@@ -192,6 +206,8 @@ bool dir_readdir(struct dir* dir, char name[NAME_MAX + 1]) {
 
   while (inode_read_at(dir->inode, &e, sizeof e, dir->pos) == sizeof e) {
     dir->pos += sizeof e;
+    if (!strcmp(e.name, ".") || !strcmp(e.name, ".."))
+      continue;
     if (e.in_use) {
       strlcpy(name, e.name, NAME_MAX + 1);
       return true;

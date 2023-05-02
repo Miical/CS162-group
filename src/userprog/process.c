@@ -129,6 +129,7 @@ void rm_childlist(struct list* childlist) {
    before process_execute() returns.  Returns the new process's
    process id, or TID_ERROR if the thread cannot be created. */
 pid_t process_execute(const char* file_name) {
+  struct thread* t = thread_current();
   char* fn_copy;
   tid_t tid;
 
@@ -146,7 +147,9 @@ pid_t process_execute(const char* file_name) {
   exec_name[name_len - 1] = '\0';
 
   /* Create a new thread to execute FILE_NAME. */
-  tid = thread_create(exec_name, PRI_DEFAULT, start_process, fn_copy);
+  void **arg = (void **)malloc(sizeof(void *) * 2);
+  arg[0] = (void *)fn_copy; arg[1] = (void *)t->pcb->pwd;
+  tid = thread_create(exec_name, PRI_DEFAULT, start_process, (void *)arg);
   if (tid == TID_ERROR)
     palloc_free_page(fn_copy);
   free(exec_name);
@@ -156,10 +159,10 @@ pid_t process_execute(const char* file_name) {
   struct loadlock *ll = get_loadlock(tid);
   sema_down(&ll->sema);
   pid_t ret = (ll->loaded ? tid : -1);
+  free(arg);
 
   /* Set the parent process pcb pointer of the child process
      and set childlist. */
-  struct thread* t = thread_current();
   add_childprocess(&t->pcb->childlist, tid);
   if (ret != -1) {
     ll->pcb->parent_pcb = t->pcb;
@@ -176,8 +179,10 @@ pid_t process_execute(const char* file_name) {
 
 /* A thread function that loads a user process and starts it
    running. */
-static void start_process(void* file_name_) {
-  char* file_name = (char*)file_name_;
+static void start_process(void* arg_) {
+  void** arg = (void **)arg_;
+  char* file_name = (char*)arg[0];
+  struct dir *pwd = (struct dir *)arg[1];
   struct thread* t = thread_current();
   struct intr_frame if_;
   bool success, pcb_success;
@@ -195,6 +200,11 @@ static void start_process(void* file_name_) {
 
     // Continue initializing the PCB as normal
     t->pcb->main_thread = t;
+    if (pwd != NULL) {
+      t->pcb->pwd = dir_reopen(pwd);
+    } else {
+      t->pcb->pwd = dir_open_root();
+    }
     strlcpy(t->pcb->process_name, t->name, sizeof t->name);
     list_init(&t->pcb->childlist);
   }
@@ -362,6 +372,7 @@ void process_exit(void) {
      can try to activate the pagedir, but it is now freed memory */
   struct process* pcb_to_free = cur->pcb;
   rm_childlist(&pcb_to_free->childlist);
+  dir_close(pcb_to_free->pwd);
   cur->pcb = NULL;
   free(pcb_to_free);
 
@@ -470,7 +481,7 @@ bool load(const char* file_name, void (**eip)(void), void** esp) {
   process_activate();
 
   /* Open executable file. */
-  file = filesys_open(file_name);
+  file = filesys_open(file_name, t->pcb->pwd);
   if (file == NULL) {
     printf("load: %s: open failed\n", file_name);
     goto done;

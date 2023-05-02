@@ -36,6 +36,12 @@ static void syscall_seek(int fd, off_t pos);
 static int syscall_tell(int fd);
 static int syscall_close(int fd);
 static int syscall_compute_e(int n);
+static bool syscall_chdir(const char* dir);
+static bool syscall_mkdir(const char* dir);
+static bool syscall_readdir(int fd, char* name);
+static bool syscall_isdir(int fd);
+static int syscall_inumber(int fd);
+
 
 /* Address verification */
 
@@ -73,15 +79,17 @@ struct list openedfiles;
 struct openedfile {
   uint32_t fd;
   pid_t pid;
-  struct file* f;
+  bool isdir;
+  void* f;
   struct list_elem elem;
 };
 
-static int add_openedfile(struct file* f) {
+static int add_openedfile(void* f, bool isdir) {
   struct openedfile *new_openedfile =
     (struct openedfile *)malloc(sizeof(struct openedfile));
   if (new_openedfile == NULL)
     return -1;
+  new_openedfile->isdir = isdir;
   new_openedfile->f = f;
   new_openedfile->pid = thread_current()->tid;
 
@@ -126,9 +134,21 @@ static struct openedfile* get_openedfile(uint32_t fd) {
   return NULL;
 }
 
+static bool isdir_fd(uint32_t fd) {
+  struct openedfile *of = get_openedfile(fd);
+  if (of) return of->isdir;
+  else return NULL;
+}
+
 static struct file* get_file(uint32_t fd) {
   struct openedfile *of = get_openedfile(fd);
-  if (of) return of->f;
+  if (of && !of->isdir) return (struct file *)of->f;
+  else return NULL;
+}
+
+static struct dir* get_directory(uint32_t fd) {
+  struct openedfile *of = get_openedfile(fd);
+  if (of && of->isdir) return (struct dir *)of->f;
   else return NULL;
 }
 
@@ -140,7 +160,8 @@ void close_all_fd_of_process(pid_t pid) {
     if (of->pid == pid) {
       struct list_elem *elem_to_rm = e;
       e = list_next(e);
-      file_close(of->f);
+      if (of->isdir) dir_close((struct dir *)of->f);
+      else file_close((struct file *)of->f);
       list_remove(elem_to_rm);
       free(of);
     } else {
@@ -186,14 +207,14 @@ static int syscall_wait(pid_t pid) {
 
 static int syscall_create(const char* name, off_t initial_size) {
   lock_acquire(&templock);
-  int st = filesys_create(name, initial_size);
+  int st = filesys_create(name, initial_size, thread_current()->pcb->pwd);
   lock_release(&templock);
   return st;
 }
 
 static int syscall_remove(const char* name) {
   lock_acquire(&templock);
-  int st = filesys_remove(name);
+  int st = filesys_remove(name, thread_current()->pcb->pwd);
   lock_release(&templock);
   return st;
 }
@@ -201,9 +222,17 @@ static int syscall_remove(const char* name) {
 static int syscall_open(const char* name) {
   lock_acquire(&templock);
   int st;
-  struct file* fp = filesys_open(name);
+  struct file* fp = filesys_open(name, thread_current()->pcb->pwd);
   if (fp != NULL) {
-    st = add_openedfile(fp);
+    if (inode_isdir(file_get_inode(fp))) {
+      struct dir* dir = dir_open(inode_reopen(file_get_inode(fp)));
+      file_close(fp);
+      st = add_openedfile((void *)dir, true);
+      if (!st) dir_close(dir);
+    } else {
+      st = add_openedfile(fp, false);
+      if (!st) file_close(fp);
+    }
   } else {
     st = -1;
   }
@@ -246,19 +275,21 @@ static int syscall_read(int fd, void *buffer, size_t length) {
 
 static int syscall_write(int fd, void *buffer, size_t length) {
   int st;
-  lock_acquire(&templock);
   if (fd == STDOUT_FILENO) {
     putbuf((char*)buffer, length);
     st = length;
+  } else if (isdir_fd(fd)) {
+    st = -1;
   } else {
     struct file* fp = get_file(fd);
     if (fp != NULL) {
+      lock_acquire(&templock);
       st = file_write(fp, buffer, length);
+      lock_release(&templock);
     } else {
       st = -1;
     }
   }
-  lock_release(&templock);
   return st;
 }
 
@@ -287,7 +318,8 @@ static int syscall_close(int fd) {
   lock_acquire(&templock);
   struct openedfile *of = get_openedfile(fd);
   if (of != NULL && of->pid == thread_current()->tid) {
-    file_close(of->f);
+    if (of->isdir) dir_close((struct dir *)of->f);
+    else file_close((struct file *)of->f);
     rm_openedfile(fd);
     st = 1;
   } else {
@@ -301,7 +333,49 @@ static int syscall_compute_e(int n) {
   return sys_sum_to_e(n);
 }
 
-static void syscall_handler(struct intr_frame* f UNUSED) {
+static bool syscall_chdir(const char* dir) {
+  lock_acquire(&templock);
+  bool st = filesys_chdir(dir, &thread_current()->pcb->pwd);
+  lock_release(&templock);
+  return st;
+}
+
+static bool syscall_mkdir(const char* dir) {
+  lock_acquire(&templock);
+  bool st = filesys_mkdir(dir, thread_current()->pcb->pwd);
+  lock_release(&templock);
+  return st;
+}
+
+static bool syscall_readdir(int fd, char* name) {
+  struct dir* dir = get_directory(fd);
+  lock_acquire(&templock);
+  bool st = dir_readdir(dir, name);
+  lock_release(&templock);
+  return st;
+}
+
+static bool syscall_isdir(int fd) {
+  return isdir_fd(fd);
+}
+
+static int syscall_inumber(int fd) {
+  int ret = true;
+  lock_acquire(&templock);
+  if (isdir_fd(fd)) {
+    struct dir *dir = get_directory(fd);
+    if (dir != NULL) ret = inode_get_inumber(dir_get_inode(dir));
+    else ret = false;
+  } else {
+    struct file* fp = get_file(fd);
+    if (fp != NULL) ret = inode_get_inumber(file_get_inode(fp));
+    else ret = false;
+  }
+  lock_release(&templock);
+  return ret;
+}
+
+static void syscall_handler(struct intr_frame* f) {
   uint32_t* args = ((uint32_t*)f->esp);
 
   /*
@@ -392,6 +466,31 @@ static void syscall_handler(struct intr_frame* f UNUSED) {
     case SYS_COMPUTE_E:
       validate_argv(args + 1, 1);
       f->eax = syscall_compute_e(args[1]);
+      break;
+
+    case SYS_CHDIR:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_chdir((const char *)args[1]);
+      break;
+
+    case SYS_MKDIR:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_mkdir((const char *)args[1]);
+      break;
+
+    case SYS_READDIR:
+      validate_argv(args + 1, 2);
+      f->eax = syscall_readdir((int)args[1], (char *)args[2]);
+      break;
+
+    case SYS_ISDIR:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_isdir((int)args[1]);
+      break;
+
+    case SYS_INUMBER:
+      validate_argv(args + 1, 1);
+      f->eax = syscall_inumber((int)args[1]);
       break;
 
     default:

@@ -2,6 +2,7 @@
 #define USERPROG_PROCESS_H
 
 #include "threads/thread.h"
+#include "filesys/directory.h"
 #include <list.h>
 #include <stdint.h>
 
@@ -51,6 +52,7 @@ typedef void (*stub_fun)(pthread_fun, void*);
 struct process {
   /* Owned by process.c. */
   uint32_t* pagedir;            /* Page directory. */
+  struct dir* pwd;              /* Current directory  */
   char process_name[16];        /* Name of the main thread */
   struct thread* main_thread;   /* Pointer to main thread */
   struct file* executable_file; /* Process executable file */
