@@ -51,8 +51,6 @@ void filesys_done(void) {
    Fails if a file named NAME already exists,
    or if internal memory allocation fails. */
 bool filesys_create(const char* name, off_t initial_size, struct dir* pwd) {
-  if (free_map_remain() < 2048)
-    return false;
   if (!check_pwd(pwd))
     return false;
   char filename[NAME_MAX + 1];
